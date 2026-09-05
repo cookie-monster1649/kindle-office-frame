@@ -1,0 +1,22 @@
+{
+  "name": "kindleframe-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Renders e-ink frames for a Kindle Paperwhite 3 desk display",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "node --watch src/index.js",
+    "preview": "node scripts/preview.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@resvg/resvg-js": "2.6.2",
+    "express": "4.21.2",
+    "markdown-it": "14.1.0",
+    "satori": "0.33.4"
+  }
+}

@@ -1,0 +1,17 @@
+# Secrets: SSH key and bearer token for the Kindle
+secrets/
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Generated render output
+render/screens/
+render/palette16.png
+render/*.png
+server/out/
+server/.env
+
+# macOS
+.DS_Store
+server/data/

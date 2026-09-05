@@ -1,0 +1,50 @@
+# Deploys to /opt/stacks/kindleframe on the NUC, on the existing `internal`
+# network.
+#
+# Nothing is published to the host: the proxy reaches the container over the
+# shared network, and the tunnel is outbound-only, so there is no listening
+# port exposed anywhere.
+#
+# The control page at / is NOT authenticated by this service - it issues a
+# session cookie for CSRF protection, not identity. Protect it at the proxy
+# (Cloudflare Access, basic auth, or LAN-only), and give the Kindle a
+# Service Auth policy scoped to /frame.png so a lost device cannot reach it.
+
+services:
+  kindleframe:
+    build: .
+    image: kindleframe:local
+    container_name: kindleframe
+    restart: unless-stopped
+
+    environment:
+      PORT: 8080
+      # Separate read and write tokens: the Kindle holds the read one and must
+      # not be able to change anything. See .env.example.
+      FRAME_READ_TOKEN: ${FRAME_READ_TOKEN:?set FRAME_READ_TOKEN in .env}
+      FRAME_WRITE_TOKEN: ${FRAME_WRITE_TOKEN:?set FRAME_WRITE_TOKEN in .env}
+      TZ_NAME: ${TZ_NAME:-Australia/Melbourne}
+      TZ: ${TZ_NAME:-Australia/Melbourne}
+      LOCATION_NAME: ${LOCATION_NAME:-Melbourne}
+      LATITUDE: ${LATITUDE:--37.8136}
+      LONGITUDE: ${LONGITUDE:-144.9631}
+      PERSON_NAME: ${PERSON_NAME:-JJ}
+      WEATHER_ENABLED: ${WEATHER_ENABLED:-true}
+      WEATHER_CACHE_SECONDS: ${WEATHER_CACHE_SECONDS:-900}
+      WEATHER_TIMEOUT_MS: ${WEATHER_TIMEOUT_MS:-8000}
+
+    volumes:
+      # Pushed content, so a restart does not blank the panel.
+      - ./data:/app/data
+
+    networks:
+      - internal
+
+    # Not published to the host: the proxy reaches it over the shared network.
+    # Uncomment for direct local testing on the NUC.
+    # ports:
+    #   - "8080:8080"
+
+networks:
+  internal:
+    external: true
