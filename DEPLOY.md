@@ -85,23 +85,54 @@ CI publishes `linux/amd64` to GHCR on every push to `main`, after the tests and
 a smoke test of the image itself. Pulling avoids a five-minute build on the NUC
 and guarantees you are running the exact bytes that passed.
 
-**The package is private, because the repo is.** Authenticate once on the NUC
-with a personal access token carrying `read:packages`:
+**The package is private, because the repo is**, so the NUC has to authenticate
+once. This is a one-off — Docker stores the credential and every later `pull`
+just works.
+
+**1. Create the token.** On github.com, signed in as `cookie-monster1649`:
+
+> Settings → Developer settings → Personal access tokens → **Tokens (classic)**
+> → Generate new token (classic)
+
+- **Note:** something you will recognise later, e.g. `nuc-ghcr-pull`
+- **Expiration:** your call. No expiry never has to be rotated but also never
+  stops working if it leaks; 90 days is a reasonable middle
+- **Scopes:** tick **`read:packages`** and nothing else
+
+Classic tokens, not fine-grained: GHCR still expects those for package pulls.
+`read:packages` alone cannot read your code, push images, or change anything —
+if this token leaks, it can pull this one private image and that is all.
+
+Copy it when shown. GitHub will not display it again.
+
+**2. Log in on the NUC:**
 
 ```sh
+export GHCR_TOKEN=ghp_xxxxxxxxxxxxxxxxxxxx
 echo "$GHCR_TOKEN" | docker login ghcr.io -u cookie-monster1649 --password-stdin
+unset GHCR_TOKEN
 ```
 
-The compose file already points at it, so:
+Passing it on stdin keeps it out of your shell history and out of the process
+list, which `docker login -p <token>` would not.
+
+Expect `Login Succeeded`. The credential lands in `~/.docker/config.json`,
+**base64-encoded, not encrypted** — so that file is now worth the same as the
+token. Log out with `docker logout ghcr.io` if the machine changes hands.
+
+**3. Check it:**
+
+```sh
+docker pull ghcr.io/cookie-monster1649/kindle-office-frame:latest
+```
+
+The compose file points at the published image and has no `build:` key, so
+there is only one thing to run:
 
 ```sh
 docker compose pull && docker compose up -d
 docker compose logs -f          # expect the security warning about /
 ```
-
-`pull` is not optional here. Compose keeps a `build:` section as a fallback, and
-with both present `up` prefers a local image if one exists — so without the
-pull you can silently keep running an older build.
 
 To pin a specific build rather than following `main`, set `IMAGE_TAG` in `.env`
 to one of the `sha-<commit>` tags CI publishes:
@@ -110,14 +141,18 @@ to one of the `sha-<commit>` tags CI publishes:
 IMAGE_TAG=sha-6fdb348de68009877267e2c623e0e3724d276104
 ```
 
-### Or build on the NUC
+### Building from source instead
+
+There is no `build:` key on purpose: with both, `up` prefers a stale local
+image over the published one, so a deploy could quietly do nothing. Build
+explicitly when you want to:
 
 ```sh
-docker compose up -d --build
+docker build -t kindleframe:dev .
+IMAGE_REPO=kindleframe IMAGE_TAG=dev docker compose up -d
 ```
 
-Same result, no registry auth, a few minutes slower. Worth keeping for working
-offline, or testing a change before pushing it.
+Useful offline, or to try a change before pushing it.
 
 The compose file expects an external network named `internal`; create it or
 change the name to match your stack. Nothing is published to the host — the
