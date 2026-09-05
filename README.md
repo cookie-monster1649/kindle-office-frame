@@ -449,6 +449,10 @@ someone's status beats a blank panel.
 
 ## 6. Running it
 
+Setting this up on a new machine, or moving it, is a separate runbook:
+**[DEPLOY.md](DEPLOY.md)** — what must be carried across, what goes on the
+NUC, and which credentials the Kindle needs.
+
 ### Locally
 
 ```sh
