@@ -10,6 +10,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { isWeekend, localDateKey, localWeekdayShort } from '../src/localdate.js';
 import { buildTree } from '../src/templates/frame.js';
+// Isolate the state file. `node --test` runs files in parallel, so
+// sharing the default path lets these races corrupt each other - which
+// showed up as an intermittent failure.
+process.env.STATE_PATH = '/tmp/frame-test-weekend.json';
 import * as store from '../src/store.js';
 
 const MEL = 'Australia/Melbourne';
