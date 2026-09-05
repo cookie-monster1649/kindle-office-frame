@@ -1,0 +1,152 @@
+name: build
+
+# Tests run first and the image only builds if they pass, so a broken render
+# never reaches the NUC. The device fails silently when a frame is malformed -
+# eips just refuses the image - so catching it here matters more than usual.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    # Device-side shell and generated screens do not affect the image.
+    paths-ignore: ['kindle/**', 'render/**', '**.md']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: server
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      # magick does the 16-level dither; Charis SIL is what the image ships, so
+      # CI renders with the same face as production rather than a lookalike.
+      - name: Install ImageMagick and the production font
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends imagemagick fonts-sil-charis
+
+      - run: npm ci
+
+      - run: npm test
+
+      # Renders every mode and orientation and asserts the constraints the
+      # Kindle actually enforces: exact dimensions, no more than 16 grey
+      # levels, and PNG colour-type 0. eips rejects anything else outright.
+      - name: Render frames and check device constraints
+        run: OFFLINE=1 npm run preview
+        env:
+          FONT_REGULAR: /usr/share/fonts/truetype/charis/CharisSIL-Regular.ttf
+          FONT_BOLD: /usr/share/fonts/truetype/charis/CharisSIL-Bold.ttf
+
+      # Useful when a layout change is under review: look at the frames rather
+      # than trusting the assertions.
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-frames
+          path: server/out/
+          retention-days: 14
+
+  image:
+    needs: test
+    # Nothing to publish from a pull request, and a fork could not push anyway.
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,format=long
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+
+      - uses: docker/build-push-action@v6
+        id: build
+        with:
+          context: server
+          push: true
+          # Single platform on purpose. The NUC is x86 Debian, and emulating
+          # arm64 under QEMU would roughly triple the build for an image
+          # nothing will run.
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Prove the image actually starts and serves before calling it good. A
+      # build that succeeds and a container that runs are different claims.
+      - name: Smoke test the built image
+        run: |
+          docker run -d --name frame \
+            -e FRAME_READ_TOKEN=ci-read \
+            -e FRAME_WRITE_TOKEN=ci-write \
+            -e WEATHER_ENABLED=false \
+            -p 8080:8080 \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+
+          for i in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:8080/healthz >/dev/null 2>&1 && break
+            [ "$i" = 30 ] && { echo "never became healthy"; docker logs frame; exit 1; }
+            sleep 2
+          done
+
+          # A real frame, not just a liveness ping: this exercises Satori,
+          # resvg, the font and the ImageMagick dither together.
+          curl -fsS -H 'Authorization: Bearer ci-read' \
+            'http://127.0.0.1:8080/frame.png?mode=in&orient=portrait' -o frame.png
+
+          file frame.png | tee /dev/stderr | grep -q '1072 x 1448' \
+            || { echo "wrong dimensions for the panel"; exit 1; }
+
+          # The read token must not be able to write.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -H 'Authorization: Bearer ci-read' http://127.0.0.1:8080/status/out)
+          [ "$code" = "403" ] || { echo "read token was allowed to write ($code)"; exit 1; }
+
+          docker rm -f frame
+
+      - name: Summary
+        run: |
+          {
+            echo "### Image published"
+            echo
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

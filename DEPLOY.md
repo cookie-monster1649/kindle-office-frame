@@ -77,12 +77,43 @@ cp .env.example .env
 ```
 
 Edit `.env`: paste both tokens from `secrets/tokens.env`, and set the location
-if it is not Melbourne. Then:
+if it is not Melbourne.
+
+### Pull the prebuilt image (preferred)
+
+CI publishes `linux/amd64` to GHCR on every push to `main`, after the tests and
+a smoke test of the image itself. Pulling avoids a five-minute build on the NUC
+and guarantees you are running the exact bytes that passed.
+
+**The package is private, because the repo is.** Authenticate once on the NUC
+with a personal access token carrying `read:packages`:
+
+```sh
+echo "$GHCR_TOKEN" | docker login ghcr.io -u cookie-monster1649 --password-stdin
+```
+
+Then point compose at the image instead of building:
+
+```yaml
+services:
+  kindleframe:
+    image: ghcr.io/cookie-monster1649/kindle-office-frame:latest
+    # build: .        # comment out
+```
+
+```sh
+docker compose pull && docker compose up -d
+docker compose logs -f          # expect the security warning about /
+```
+
+### Or build on the NUC
 
 ```sh
 docker compose up -d --build
-docker compose logs -f          # expect the security warning about /
 ```
+
+Same result, no registry auth, five minutes slower. Worth keeping as the
+fallback if GHCR is unreachable or you are working offline.
 
 The compose file expects an external network named `internal`; create it or
 change the name to match your stack. Nothing is published to the host — the
