@@ -12,8 +12,26 @@
 
 services:
   kindleframe:
+    # Published by CI for linux/amd64 after the tests and a smoke test of the
+    # image itself, so pulling gets the exact bytes that passed rather than a
+    # rebuild that merely should match.
+    #
+    #   docker compose pull && docker compose up -d
+    #
+    # `build` is kept as a fallback for working offline, or on a change that
+    # has not been pushed yet. With both keys present `up` prefers a local
+    # image if one exists, so pull explicitly when you want the published one:
+    #
+    #   docker compose up -d --build      build here instead
+    #
+    # The package is private because the repo is, so the NUC needs a one-time
+    # `docker login ghcr.io` with a token carrying read:packages.
+    #
+    # IMAGE_TAG pins a specific build. CI also publishes sha-<commit>, which is
+    # worth using for a deploy that cannot move under you.
+    image: ghcr.io/cookie-monster1649/kindle-office-frame:${IMAGE_TAG:-latest}
     build: .
-    image: kindleframe:local
+
     container_name: kindleframe
     restart: unless-stopped
 

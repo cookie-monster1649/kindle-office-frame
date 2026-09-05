@@ -92,18 +92,22 @@ with a personal access token carrying `read:packages`:
 echo "$GHCR_TOKEN" | docker login ghcr.io -u cookie-monster1649 --password-stdin
 ```
 
-Then point compose at the image instead of building:
-
-```yaml
-services:
-  kindleframe:
-    image: ghcr.io/cookie-monster1649/kindle-office-frame:latest
-    # build: .        # comment out
-```
+The compose file already points at it, so:
 
 ```sh
 docker compose pull && docker compose up -d
 docker compose logs -f          # expect the security warning about /
+```
+
+`pull` is not optional here. Compose keeps a `build:` section as a fallback, and
+with both present `up` prefers a local image if one exists — so without the
+pull you can silently keep running an older build.
+
+To pin a specific build rather than following `main`, set `IMAGE_TAG` in `.env`
+to one of the `sha-<commit>` tags CI publishes:
+
+```sh
+IMAGE_TAG=sha-6fdb348de68009877267e2c623e0e3724d276104
 ```
 
 ### Or build on the NUC
@@ -112,8 +116,8 @@ docker compose logs -f          # expect the security warning about /
 docker compose up -d --build
 ```
 
-Same result, no registry auth, five minutes slower. Worth keeping as the
-fallback if GHCR is unreachable or you are working offline.
+Same result, no registry auth, a few minutes slower. Worth keeping for working
+offline, or testing a change before pushing it.
 
 The compose file expects an external network named `internal`; create it or
 change the name to match your stack. Nothing is published to the host — the
