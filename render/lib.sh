@@ -22,6 +22,17 @@
 DEV_W=1072
 DEV_H=1448
 
+# ImageMagick 6 and 7 differ in entry point, and which you get depends on the
+# distro: IM7 has `magick`, IM6 (Debian bookworm) has only `convert`.
+if command -v magick >/dev/null 2>&1; then
+  IM="magick"
+elif command -v convert >/dev/null 2>&1; then
+  IM="convert"
+else
+  echo "ImageMagick not found: needs magick (v7) or convert (v6)" >&2
+  exit 1
+fi
+
 FONT="${FONT:-/System/Library/Fonts/Supplemental/Charter.ttc}"
 
 # logical canvas for an orientation
@@ -41,7 +52,7 @@ ensure_palette() {
     set -- "$@" -size 1x1 "xc:rgb($v,$v,$v)"
     i=$(( i + 1 ))
   done
-  magick "$@" +append -depth 8 "$pal"
+  "$IM" "$@" +append -depth 8 "$pal"
 }
 
 # finalise <logical.png> <orientation> <out.png> <palette>
@@ -54,7 +65,7 @@ finalise() {
   rot=""
   [ "$orient" = "landscape" ] && rot="-rotate 90"
   # shellcheck disable=SC2086
-  magick "$src" $rot \
+  "$IM" "$src" $rot \
     -colorspace Gray -dither FloydSteinberg -remap "$pal" \
     -type Grayscale -depth 8 -define png:color-type=0 \
     "$out"

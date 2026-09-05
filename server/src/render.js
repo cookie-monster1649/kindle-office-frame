@@ -39,6 +39,45 @@ import { loadFonts } from './fonts.js';
 const exec = promisify(execFile);
 
 /**
+ * ImageMagick 6 and 7 have different entry points, and which one you get
+ * depends on the distro rather than anything we control.
+ *
+ *   IM7  magick, magick identify        (Homebrew, Debian trixie)
+ *   IM6  convert, identify              (Debian bookworm - our base image)
+ *
+ * Detected once rather than assumed: developing against Homebrew's IM7 and
+ * deploying onto bookworm's IM6 otherwise fails with a bare `spawn magick
+ * ENOENT` at render time, which is a poor way to find out.
+ */
+let toolsPromise = null;
+async function tools() {
+  if (toolsPromise) return toolsPromise;
+  toolsPromise = (async () => {
+    try {
+      await exec('magick', ['-version']);
+      return { convert: ['magick'], identify: ['magick', 'identify'] };
+    } catch {
+      try {
+        await exec('convert', ['-version']);
+        return { convert: ['convert'], identify: ['identify'] };
+      } catch {
+        throw new Error(
+          'ImageMagick not found: needs `magick` (v7) or `convert` (v6) on PATH'
+        );
+      }
+    }
+  })();
+  return toolsPromise;
+}
+
+/** Run an ImageMagick subcommand with whichever binary this host provides. */
+async function im(kind, args) {
+  const t = await tools();
+  const [cmd, ...prefix] = t[kind];
+  return exec(cmd, [...prefix, ...args]);
+}
+
+/**
  * 16 evenly spaced greys as a 16x1 PNG, for -remap.
  *
  * Built once into its own directory: the per-render temp dir is deleted after
@@ -57,7 +96,7 @@ async function palettePath() {
       args.push('-size', '1x1', `xc:rgb(${v},${v},${v})`);
     }
     args.push('+append', '-depth', '8', p);
-    await exec('magick', args);
+    await im('convert', args);
     return p;
   })();
   return palettePromise;
@@ -102,7 +141,7 @@ export async function toEink(pngBuffer, orientation) {
       out
     );
 
-    await exec('magick', args);
+    await im('convert', args);
     return await readFile(out);
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -124,7 +163,7 @@ export async function describePng(buffer) {
   try {
     const p = join(dir, 'x.png');
     await writeFile(p, buffer);
-    const { stdout } = await exec('magick', ['identify', '-format', '%w %h %k', p]);
+    const { stdout } = await im('identify', ['-format', '%w %h %k', p]);
     const [width, height, levels] = stdout.trim().split(/\s+/).map(Number);
     // Colour type is byte 25 of the IHDR: 0 greyscale, 3 palette.
     return { width, height, levels, colorType: buffer[25] };

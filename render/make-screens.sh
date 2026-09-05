@@ -60,7 +60,7 @@ draw_menu() {
     y=$(( y2 + gap ))
   done
 
-  magick -size "${W}x${H}" xc:white \
+  "$IM" -size "${W}x${H}" xc:white \
     -fill gray92 -stroke black -strokewidth 3 \
     -draw "$boxes" \
     "$tmp"
@@ -80,7 +80,7 @@ draw_menu() {
     n=$(( n + 1 ))
   done
 
-  eval magick "$tmp" -font "\"$FONT\"" -fill black -stroke none \
+  eval "$IM" "$tmp" -font "\"$FONT\"" -fill black -stroke none \
     -pointsize "$ps" -gravity NorthWest $cmd_label \
     -pointsize $(( ps * 3 / 2 )) -gravity North \
     -annotate +0+${title_y} "\"Frame\"" \
@@ -114,7 +114,7 @@ draw_status() {
     ps1=130; y1=$(( H / 2 - 40 ))
   fi
 
-  magick -size "${W}x${H}" xc:white -font "$FONT" -fill black -stroke none \
+  "$IM" -size "${W}x${H}" xc:white -font "$FONT" -fill black -stroke none \
     -gravity North \
     -pointsize "$ps1" -annotate +0+${y1} "$line1" \
     "$tmp"
