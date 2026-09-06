@@ -117,15 +117,21 @@ function statusWidth(landscape) {
 // Mean advance width as a fraction of font size, for the shipped serif faces
 // (Charis SIL in the container, Georgia locally - both Matthew Carter text
 // designs with close metrics). Only accurate enough to decide which side of
-// two lines a message falls on, which is all it is asked to do.
+// the line limit a message falls on, which is all it is asked to do.
 //
 // Calibrated against satori's real layout over a spread of realistic messages
 // in both orientations. It is deliberately a shade high: overestimating glyph
 // width picks a smaller size than strictly needed, while underestimating picks
-// one that wraps to three lines after claiming it would fit in two, which is
-// the outcome this sizing exists to avoid. 0.48 was the largest value with no
+// one that wraps past the limit after claiming it would fit, which is the
+// outcome this sizing exists to avoid. 0.48 was the largest value with no
 // overflow in that sweep.
 const AVG_CHAR_EM = 0.48;
+
+// How many lines the message may occupy before it has to shrink. Five is not
+// arbitrary: the portrait status column is 46% of the inner height, which is
+// 609px, and five lines at the headline size is 559px. Six would overflow it.
+// Landscape has room for seven, so portrait is the binding constraint.
+const MAX_LINES = 5;
 
 /** Greedy word wrap, counting the lines `text` would occupy. */
 function wrappedLines(text, fontSize, width) {
@@ -155,22 +161,23 @@ function statusPane({ mode, markdown, customText }, landscape) {
   }
 
   if (mode === 'text') {
-    // Match the in/out headline size, and only step down when the message will
-    // not fit in two lines at it. A short message then reads exactly like a
-    // status - same size, same weight - instead of arriving noticeably larger
-    // or smaller for no reason the reader can see.
+    // Match the in/out headline size, and hold it until the message needs more
+    // than MAX_LINES lines. Most messages then read exactly like a status -
+    // same size, same weight - instead of arriving at some other size for no
+    // reason the reader can see.
     //
-    // Past two lines readability wins over matching: the message still has to
-    // fit the pane, and it wraps rather than truncating, since a half-shown
-    // message is worse than a smaller one. The 120-character cap means the
-    // bottom of the ladder is reachable, so it has to be a usable size rather
-    // than a token fallback.
+    // Only past that does readability give way: the message still has to fit
+    // the pane, and it wraps rather than truncating, since a half-shown message
+    // is worse than a smaller one. A smaller size fits more characters per
+    // line and so needs fewer lines, which is what the ladder is walking
+    // towards. The 120-character cap means the bottom is reachable, so it has
+    // to be a usable size rather than a token fallback.
     const body = customText || '—';
     const ladder = landscape
       ? [STATUS_SIZE.landscape, 96, 82, 70, 60, 52]
       : [STATUS_SIZE.portrait, 84, 72, 62, 54, 46];
     const width = statusWidth(landscape);
-    const size = ladder.find((s) => wrappedLines(body, s, width) <= 2)
+    const size = ladder.find((s) => wrappedLines(body, s, width) <= MAX_LINES)
       ?? ladder[ladder.length - 1];
     return col({ justifyContent: 'center' }, [
       el('div', {

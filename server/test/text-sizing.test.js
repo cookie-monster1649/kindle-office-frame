@@ -32,8 +32,17 @@ for (const orientation of ['landscape', 'portrait']) {
     assert.equal(messageSize(orientation, 'Back at 3pm'), HEADLINE[orientation]);
   });
 
-  test(`${orientation}: a message too long for two lines steps down`, () => {
-    const long = 'Away on leave until the 14th of next month, please contact the team inbox';
+  test(`${orientation}: a multi-line message still holds the headline size`, () => {
+    // Wraps to several lines in both orientations, but stays under the limit,
+    // so it should not shrink - this is the case the old two-line rule got
+    // wrong, shrinking a message that had plenty of room.
+    const medium = 'Back at 3pm today, ping me on Slack';
+    assert.equal(messageSize(orientation, medium), HEADLINE[orientation]);
+  });
+
+  test(`${orientation}: a message too long for the line limit steps down`, () => {
+    const long = 'Working from home this week. Back in the office on Monday, '
+      + 'ping me on Slack if anything urgent comes up before then';
     const size = messageSize(orientation, long);
     assert.ok(size < HEADLINE[orientation],
       `expected a step down from ${HEADLINE[orientation]}, got ${size}`);
