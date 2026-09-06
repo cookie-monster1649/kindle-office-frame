@@ -15,7 +15,7 @@ test('the custom message field has a status dot before it', () => {
 
 test('the dot is muted by default and green when the message is showing', () => {
   assert.match(html, /\.statusdot \{[^}]*background: var\(--muted\)/);
-  assert.match(html, /\.textrow\[data-active="true"\] \.statusdot \{ background: var\(--on\)/);
+  assert.match(html, /\.custom\[data-active="true"\] \.statusdot \{ background: var\(--on\)/);
   assert.match(html, /\$\('textrow'\)\.dataset\.active = String\(textOn\)/);
 });
 
@@ -42,4 +42,39 @@ test('--on is defined for both colour schemes', () => {
   const lv = light.match(/--on:(#[0-9a-f]{6})/i)[1];
   const dv = dark.match(/--on:(#[0-9a-f]{6})/i)[1];
   assert.notEqual(lv.toLowerCase(), dv.toLowerCase());
+});
+
+// --- the three options ------------------------------------------------------
+// in, out and custom are one set. Custom carries a field, so it cannot be a
+// plain button, but it has to read as the same kind of thing rather than a
+// form bolted underneath the two that matter.
+
+test('all three options live in one grid', () => {
+  assert.match(html, /<div class="options">/);
+  assert.match(html, /\.options > \.custom \{ grid-column: 1 \/ -1/);
+  // Same card rules for the button and the custom row.
+  assert.match(html, /button, \.custom \{/);
+});
+
+test('the custom card shows selection the same way the buttons do', () => {
+  const pressed = html.match(/button\[aria-pressed="true"\] \{([^}]*)\}/)[1];
+  const active = html.match(/\.custom\[data-active="true"\] \{([^}]*)\}/)[1];
+  for (const decl of ['background: var(--fg)', 'color: var(--bg)', 'border-color: var(--fg)']) {
+    assert.ok(pressed.includes(decl), `button pressed should set ${decl}`);
+    assert.ok(active.includes(decl), `custom active should set ${decl}`);
+  }
+});
+
+test('the action is labelled Show custom and starts inert', () => {
+  assert.match(html, /<button id="send" disabled>Show custom<\/button>/);
+  // Live only when pressing it would change something.
+  assert.match(html, /function syncSend\(\)/);
+  assert.match(html, /\$\('send'\)\.disabled = !text \|\| already/);
+});
+
+test('the input is bare so the card is the field', () => {
+  const rule = html.match(/input\[type=text\] \{([^}]*)\}/)[1];
+  assert.ok(rule.includes('border: 0'), 'no border of its own');
+  assert.ok(rule.includes('background: transparent'), 'no background of its own');
+  assert.doesNotMatch(rule, /border-radius/, 'a box inside a box');
 });

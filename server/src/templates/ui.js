@@ -46,32 +46,54 @@ export function controlPage({ personName }) {
   .cols { display: grid; gap: 26px; grid-template-columns: 1fr; }
   @media (min-width: 720px) { .cols { grid-template-columns: 1fr 300px; } }
 
-  .buttons { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
-  button {
+  /* Three peer options - in, out, custom - in one grid so they read as a set.
+     Custom spans the row because it carries its own field, but it is the same
+     card as the other two: same border, radius, height and selected state. */
+  .options { display: grid; gap: 10px; grid-template-columns: 1fr 1fr; }
+  .options > .custom { grid-column: 1 / -1; }
+
+  button, .custom {
     font: inherit; font-weight: 600; color: var(--fg); background: transparent;
     border: 1.5px solid var(--line); border-radius: 12px;
     padding: 16px; cursor: pointer; min-height: 58px;
     display: flex; align-items: center; gap: 10px;
   }
-  button:hover:not(:disabled) { border-color: var(--fg); }
+  button:hover:not(:disabled), .custom:hover { border-color: var(--fg); }
   button[aria-pressed="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
   button:disabled { opacity: .5; cursor: default; }
   .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; opacity: .3; }
   button[aria-pressed="true"] .dot { opacity: 1; }
 
-  .textrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
-  /* Same 9px dot as the in/out buttons, but it carries its own colour: there
-     is no pressed button here to tint it, so grey/green says whether the
-     custom message is the thing on the panel. */
+  /* The card is the field. A bordered input inside a bordered card is a box in
+     a box, so the input is bare and the card carries the frame - which is what
+     lets the row sit beside in/out as the same object rather than a form. */
+  .custom { padding: 8px 8px 8px 16px; cursor: text; }
+  .custom[data-active="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
+
+  /* Same 9px dot as the in/out buttons, but it colours itself: there is no
+     pressed button here to tint it, so grey/green says whether the custom
+     message is the thing on the panel. */
   .statusdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
                background: var(--muted); transition: background .15s; }
-  .textrow[data-active="true"] .statusdot { background: var(--on); }
+  .custom[data-active="true"] .statusdot { background: var(--on); }
+
   input[type=text] {
-    flex: 1; font: inherit; padding: 14px; border-radius: 12px;
-    border: 1.5px solid var(--line); background: var(--bg); color: var(--fg); min-width: 0;
+    flex: 1; min-width: 0; font: inherit; font-weight: 400;
+    border: 0; background: transparent; color: inherit; padding: 0;
   }
-  input[type=text]:focus { outline: none; border-color: var(--fg); }
-  .textrow button { min-height: 0; padding: 0 18px; }
+  input[type=text]:focus { outline: none; }
+  input[type=text]::placeholder { color: var(--muted); opacity: 1; }
+  .custom[data-active="true"] input::placeholder { color: var(--bg); opacity: .6; }
+
+  /* Sized to the input's line box, not the card: it sits inside the card the
+     way the dot does, rather than restating the card's height. */
+  .custom button {
+    min-height: 0; height: 40px; padding: 0 16px; border-radius: 9px;
+    background: var(--fg); color: var(--bg); border-color: var(--fg);
+    flex: 0 0 auto; white-space: nowrap;
+  }
+  .custom[data-active="true"] button { background: var(--bg); color: var(--fg); border-color: var(--bg); }
+  .custom button:disabled { opacity: .45; cursor: default; }
 
   .toggle {
     display: flex; align-items: center; justify-content: space-between; gap: 14px;
@@ -122,15 +144,15 @@ export function controlPage({ personName }) {
   <div class="cols">
     <section>
       <h2>Status</h2>
-      <div class="buttons">
+      <div class="options">
         <button data-display="in"  aria-pressed="false"><span class="dot"></span>In office</button>
         <button data-display="out" aria-pressed="false"><span class="dot"></span>Out of office</button>
-      </div>
 
-      <div class="textrow" id="textrow" data-active="false">
-        <span class="statusdot" id="textdot" role="img" aria-label="Custom message is not showing"></span>
-        <input id="text" type="text" maxlength="120" placeholder="Custom message…">
-        <button id="send">Show</button>
+        <div class="custom" id="textrow" data-active="false">
+          <span class="statusdot" id="textdot" role="img" aria-label="Custom message is not showing"></span>
+          <input id="text" type="text" maxlength="120" placeholder="Custom message…">
+          <button id="send" disabled>Show custom</button>
+        </div>
       </div>
 
       <div class="toggle" id="weekend" role="switch" tabindex="0" aria-checked="true">
@@ -166,6 +188,9 @@ export function controlPage({ personName }) {
 <script>
 const $ = (id) => document.getElementById(id);
 const buttons = [...document.querySelectorAll('button[data-display]')];
+// Last known server state, so the action can tell 'already showing this'
+// from "there is a change to send".
+let shown = { display: null, customText: '' };
 const LABELS = { in: 'In office', out: 'Out of office', text: 'Custom message', weekend: 'Weekend' };
 
 function say(text, isError) {
@@ -186,6 +211,9 @@ function paint(s) {
   $('textdot').setAttribute('aria-label',
     textOn ? 'Custom message is showing' : 'Custom message is not showing');
 
+  shown = { display: s.display, customText: s.customText || '' };
+  syncSend();
+
   if (document.activeElement !== $('text')) $('text').value = s.customText || '';
 
   $('cap').textContent = s.autoWeekend
@@ -199,6 +227,24 @@ function paint(s) {
   $('shot-p').src = '/preview?mode=server&orient=portrait' + bust;
   $('shot-l').src = '/preview?mode=server&orient=landscape' + bust;
 }
+
+/**
+ * 'Show custom' is live only when pressing it would change the panel: there is
+ * a message, and it is not already the one showing. Otherwise it is the third
+ * option's inert label rather than a button that appears to do nothing.
+ */
+function syncSend() {
+  const text = $('text').value.trim();
+  const already = shown.display === 'text' && text === shown.customText.trim();
+  $('send').disabled = !text || already;
+}
+$('text').addEventListener('input', syncSend);
+
+// The card reads as a field, so clicking anywhere in it should land in the
+// input - except on the action itself.
+$('textrow').addEventListener('click', (e) => {
+  if (!e.target.closest('button')) $('text').focus();
+});
 
 async function api(path, options) {
   // No Authorization header: the session cookie set by GET / authorises this.
@@ -216,6 +262,7 @@ const refresh = async () => { try { paint(await api('/status')); } catch (e) { s
 
 async function send(patch, note) {
   buttons.forEach((b) => (b.disabled = true));
+  $('send').disabled = true;
   try {
     paint(await api('/status', {
       method: 'POST',
@@ -224,7 +271,9 @@ async function send(patch, note) {
     }));
     say(note);
   } catch (err) { say(err.message, true); }
-  finally { buttons.forEach((b) => (b.disabled = false)); }
+  // syncSend, not a blanket re-enable: paint() has just told us what is
+  // showing, so the action re-enables only if there is still a change to make.
+  finally { buttons.forEach((b) => (b.disabled = false)); syncSend(); }
 }
 
 buttons.forEach((b) =>
@@ -233,7 +282,7 @@ buttons.forEach((b) =>
 
 const sendText = () => {
   const text = $('text').value.trim();
-  if (!text) { say('Type a message first.', true); return; }
+  if (!text) { $('text').focus(); return; }
   send({ display: 'text', text }, 'Message set.');
 };
 $('send').addEventListener('click', sendText);
