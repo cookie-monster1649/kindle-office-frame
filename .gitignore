@@ -15,3 +15,6 @@ server/.env
 # macOS
 .DS_Store
 server/data/
+
+# Session handover notes, kept locally rather than in the repo
+HANDOVER.md
