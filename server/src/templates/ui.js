@@ -170,8 +170,8 @@ function paint(s) {
   // single guess would be misleading. Cache-busted on the version counter so
   // the previews follow a change without re-fetching unchanged bytes.
   const bust = '&v=' + s.version;
-  $('shot-p').src = '/frame.png?mode=server&orient=portrait' + bust;
-  $('shot-l').src = '/frame.png?mode=server&orient=landscape' + bust;
+  $('shot-p').src = '/preview?mode=server&orient=portrait' + bust;
+  $('shot-l').src = '/preview?mode=server&orient=landscape' + bust;
 }
 
 async function api(path, options) {

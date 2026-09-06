@@ -92,3 +92,25 @@ test('a wrong token is refused outright', async () => {
   const res = await fetch(`${BASE}/frame.png?mode=in`, { headers: auth('guess') });
   assert.equal(res.status, 401);
 });
+
+// --- /preview ---------------------------------------------------------------
+// The control page's previews cannot use /frame.png: DEPLOY.md scopes a
+// Cloudflare Access Service Auth application to that exact path, and Service
+// Auth has no interactive fallback, so a browser with a valid SSO session gets
+// a hard 403 before the request ever reaches us. /preview serves the same bytes
+// from a path Access does not single out - and deliberately without a .png
+// extension, which nginx-proxy-manager's asset cache also keys off.
+//
+// It must stay closed to the read token. The whole point of the Access scoping
+// is that a lost device unlocks nothing beyond /frame.png; a preview path that
+// accepted the device's token would quietly hand that back.
+
+test('preview rejects an unauthenticated request', async () => {
+  const res = await fetch(`${BASE}/preview?mode=in&orient=portrait`);
+  assert.equal(res.status, 401);
+});
+
+test('preview CANNOT be read with the device read token', async () => {
+  const res = await fetch(`${BASE}/preview?mode=in&orient=portrait`, { headers: auth(READ) });
+  assert.equal(res.status, 401);
+});

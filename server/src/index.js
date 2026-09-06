@@ -85,6 +85,15 @@ function canWrite(req) {
   return bearer(req) === config.writeToken || hasUiSession(req);
 }
 
+/**
+ * The control page's previews. Deliberately not satisfied by the device's read
+ * token: the previews exist for the browser, and keeping the read token out
+ * means this path cannot be used to sidestep the Access scoping on /frame.png.
+ */
+function canPreview(req) {
+  return hasUiSession(req) || bearer(req) === config.writeToken;
+}
+
 app.get('/healthz', (_req, res) => res.json({ ok: true }));
 
 /**
@@ -100,12 +109,7 @@ app.get('/', (_req, res) => {
   res.type('html').send(controlPage({ personName: config.personName }));
 });
 
-app.get('/frame.png', async (req, res) => {
-  // The read endpoint is authenticated too. It is reachable from the public
-  // internet through the tunnel, and the frame carries someone's location and
-  // whereabouts.
-  if (!canRead(req)) return res.status(401).json({ error: 'unauthorized' });
-
+async function serveFrame(req, res) {
   const mode = pick(req.query.mode, MODES, 'in');
   const orientation = pick(req.query.orient, ORIENTATIONS, 'portrait');
 
@@ -139,6 +143,40 @@ app.get('/frame.png', async (req, res) => {
     console.error('[frame] render failed:', err);
     return res.status(500).json({ error: 'render failed' });
   }
+}
+
+/**
+ * The read endpoint is authenticated too. It is reachable from the public
+ * internet through the tunnel, and the frame carries someone's location and
+ * whereabouts.
+ */
+app.get('/frame.png', async (req, res) => {
+  if (!canRead(req)) return res.status(401).json({ error: 'unauthorized' });
+  return serveFrame(req, res);
+});
+
+/**
+ * The same bytes as /frame.png, for the control page's previews, served from a
+ * path with no `.png` extension. That is deliberate: two separate things key
+ * off the extension and each breaks the previews on its own.
+ *
+ *   - Cloudflare Access. DEPLOY.md scopes a Service Auth application to
+ *     /frame.png so a lost device unlocks nothing else. Access matches the most
+ *     specific path first, and Service Auth has no interactive fallback - so a
+ *     browser holding a perfectly valid SSO session still gets a hard 403, and
+ *     the previews the control page promises can never load.
+ *   - nginx-proxy-manager's asset caching, which matches on extension and
+ *     shared-caches *.png under a key of $host$request_uri carrying no auth
+ *     component, ignores the origin's Cache-Control, and stores error statuses
+ *     for 30 minutes.
+ *
+ * Widening the Access application to the whole hostname would also fix the
+ * previews, but it would let a stolen device token reach `GET /`, which hands
+ * out a session cookie that authorises writes. This keeps that door shut.
+ */
+app.get('/preview', async (req, res) => {
+  if (!canPreview(req)) return res.status(401).json({ error: 'unauthorized' });
+  return serveFrame(req, res);
 });
 
 // HEAD is what the device actually polls with: it carries the ETag and costs
