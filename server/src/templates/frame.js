@@ -133,20 +133,62 @@ const AVG_CHAR_EM = 0.48;
 // Landscape has room for seven, so portrait is the binding constraint.
 const MAX_LINES = 5;
 
-/** Greedy word wrap, counting the lines `text` would occupy. */
+/** Characters that fit on one line at this size. */
+const perLine = (fontSize, width) => width / (fontSize * AVG_CHAR_EM);
+
+/**
+ * Greedy word wrap, counting the lines `text` would occupy.
+ *
+ * A word longer than a whole line gets hyphenated across several, so it cannot
+ * be measured by wrapping at spaces - counting it as one line is how a single
+ * long token used to escape the sizing entirely and overrun the column.
+ */
 function wrappedLines(text, fontSize, width) {
-  const perLine = width / (fontSize * AVG_CHAR_EM);
+  const cap = perLine(fontSize, width);
   const words = String(text).trim().split(/\s+/).filter(Boolean);
   if (!words.length) return 1;
 
   let lines = 1;
   let used = 0;
   for (const word of words) {
+    if (word.length > cap) {
+      if (used > 0) { lines += 1; }
+      lines += Math.ceil(word.length / cap) - 1;
+      used = word.length % cap || cap;
+      continue;
+    }
     if (used === 0) { used = word.length; continue; }
-    if (used + 1 + word.length <= perLine) used += 1 + word.length;
+    if (used + 1 + word.length <= cap) used += 1 + word.length;
     else { lines += 1; used = word.length; }
   }
   return lines;
+}
+
+/**
+ * Insert hyphens inside words too long to fit a line on their own.
+ *
+ * Only words that cannot fit are touched, so ordinary text is returned
+ * unchanged and never acquires a hyphen it did not ask for. satori treats `-`
+ * as a break opportunity and keeps it on the line it ends, so the break reads
+ * as a hyphenated word rather than a word that simply stops.
+ *
+ * Chunks are one character short of the estimated capacity to leave room for
+ * the hyphen, and AVG_CHAR_EM already errs wide, so the break lands at or
+ * before the real one. `wordBreak: 'break-word'` on the container backstops it:
+ * if this estimate is ever wrong the text breaks without a hyphen instead of
+ * overflowing the column, which is the failure that matters.
+ */
+function hyphenateLongWords(text, fontSize, width) {
+  const cap = Math.floor(perLine(fontSize, width));
+  if (cap < 4) return text;
+
+  return String(text).split(/(\s+)/).map((token) => {
+    if (!token.trim() || token.length <= cap) return token;
+    const chunk = cap - 1;
+    const parts = [];
+    for (let i = 0; i < token.length; i += chunk) parts.push(token.slice(i, i + chunk));
+    return parts.join('-');
+  }).join('');
 }
 
 function statusPane({ mode, markdown, customText }, landscape) {
@@ -172,16 +214,21 @@ function statusPane({ mode, markdown, customText }, landscape) {
     // line and so needs fewer lines, which is what the ladder is walking
     // towards. The 120-character cap means the bottom is reachable, so it has
     // to be a usable size rather than a token fallback.
-    const body = customText || '—';
+    const raw = customText || '—';
     const ladder = landscape
       ? [STATUS_SIZE.landscape, 96, 82, 70, 60, 52]
       : [STATUS_SIZE.portrait, 84, 72, 62, 54, 46];
     const width = statusWidth(landscape);
-    const size = ladder.find((s) => wrappedLines(body, s, width) <= MAX_LINES)
+    const size = ladder.find((s) => wrappedLines(raw, s, width) <= MAX_LINES)
       ?? ladder[ladder.length - 1];
+    const body = hyphenateLongWords(raw, size, width);
     return col({ justifyContent: 'center' }, [
       el('div', {
         display: 'flex', flexWrap: 'wrap',
+        // Last line of defence against a single long token overrunning the
+        // column and colliding with the weather pane. Hyphenation above should
+        // mean this never has to fire.
+        wordBreak: 'break-word',
         fontSize: size, lineHeight: 1.14,
       }, body),
     ]);
