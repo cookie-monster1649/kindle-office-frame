@@ -253,10 +253,20 @@ mv /mnt/us/usbnet/DISABLED_auto /mnt/us/usbnet/auto   # start usbnet at boot
 
 # generate assets and deploy
 ./render/make-screens.sh
-rsync -avz --exclude=local/state kindle/ kindle:/mnt/us/dashboard/
+rsync -avz --exclude=local/state --exclude=local/env.sh \
+      kindle/ kindle:/mnt/us/dashboard/
 rsync -avz render/screens/ kindle:/mnt/us/dashboard/screens/
 cp kindle/tools/Frame.sh /Volumes/Kindle/documents/
+
+# first deploy only: the device's config is not in the repo
+scp kindle/local/env.sh.example kindle:/mnt/us/dashboard/local/env.sh
 ```
+
+`local/env.sh` holds the read token and the Access service token, so it is
+gitignored and excluded from the deploy above. That exclusion is load-bearing:
+without it every deploy overwrites the device's credentials with the example's
+placeholders, and the panel starts failing authentication - a 401 from the app,
+or a 403 from Cloudflare Access if the service token is what got wiped.
 
 Then tap **Frame** in the Kindle library.
 

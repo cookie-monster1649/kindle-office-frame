@@ -489,13 +489,16 @@ rather than discovering system fonts, output is reproducible.
 
 ```sh
 ./render/make-screens.sh                                   # generate assets
-rsync -avz --exclude=local/state kindle/ kindle:/mnt/us/dashboard/
+rsync -avz --exclude=local/state --exclude=local/env.sh \
+      kindle/ kindle:/mnt/us/dashboard/
 rsync -avz render/screens/ kindle:/mnt/us/dashboard/screens/
 cp kindle/tools/Frame.sh /Volumes/Kindle/documents/        # library launcher
 ```
 
 Then tap **Frame** in the library. Config is `local/env.sh`, where `FRAME_TOKEN`
-must hold the **read** token.
+must hold the **read** token. It is gitignored and excluded from the deploy, so
+it survives an update rather than being replaced by the placeholders in
+`local/env.sh.example` - copy that across by hand on the first deploy only.
 
 Over TLS the endpoint **must be a hostname, not an IP** — `xh` is built against
 rustls, which refuses HTTPS to bare IP addresses. Plain HTTP to an IP is fine

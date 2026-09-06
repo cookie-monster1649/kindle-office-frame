@@ -1,6 +1,11 @@
 # Secrets: SSH key and bearer token for the Kindle
 secrets/
 
+# The device's live config: holds the read token and the Access service token.
+# Tracked as kindle/local/env.sh.example instead. Keeping the real one out of
+# the repo is what stops a deploy overwriting the device's credentials.
+kindle/local/env.sh
+
 # Node
 node_modules/
 npm-debug.log*
