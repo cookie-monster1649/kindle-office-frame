@@ -81,6 +81,9 @@ async function main() {
       if (info.colorType !== 0) {
         problems.push(`PNG colour-type ${info.colorType}; eips only accepts 0 (greyscale)`);
       }
+      if (info.bitDepth !== 8) {
+        problems.push(`PNG bit-depth ${info.bitDepth}; eips only accepts 8 ("8bit only")`);
+      }
 
       if (problems.length) {
         failures += 1;

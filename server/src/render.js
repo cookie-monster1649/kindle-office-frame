@@ -138,6 +138,14 @@ export async function toEink(pngBuffer, orientation) {
       '-type', 'Grayscale',
       '-depth', '8',
       '-define', 'png:color-type=0',
+      // -depth 8 is not enough on its own: ImageMagick 6 (which is what the
+      // bookworm-based image ships) still packs a 16-grey image into 4-bit
+      // samples, and eips refuses anything that is not 8-bit with
+      //   paint_image> cannot open "x.png":8bit only
+      // That failure is silent on the device, because dash.sh sends eips
+      // output to /dev/null - the fetch succeeds, the screen never repaints,
+      // and the panel sits on whatever was last drawn.
+      '-define', 'png:bit-depth=8',
       out
     );
 
@@ -165,8 +173,8 @@ export async function describePng(buffer) {
     await writeFile(p, buffer);
     const { stdout } = await im('identify', ['-format', '%w %h %k', p]);
     const [width, height, levels] = stdout.trim().split(/\s+/).map(Number);
-    // Colour type is byte 25 of the IHDR: 0 greyscale, 3 palette.
-    return { width, height, levels, colorType: buffer[25] };
+    // IHDR: byte 24 is bit depth, byte 25 is colour type (0 greyscale, 3 palette).
+    return { width, height, levels, bitDepth: buffer[24], colorType: buffer[25] };
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
