@@ -97,6 +97,52 @@ function weatherPane(weather, landscape) {
   ]);
 }
 
+// Outer padding, shared with frameTree below so the width the sizing maths
+// assumes cannot drift from the width actually rendered.
+const PAD = { landscape: 56, portrait: 62 };
+
+// The headline size for in/out. Custom text matches it wherever it can, so
+// switching between them does not change the weight of the panel.
+const STATUS_SIZE = { landscape: 112, portrait: 98 };
+
+/** Width available to the status column, in px. */
+function statusWidth(landscape) {
+  const { width } = logicalSize(landscape ? 'landscape' : 'portrait');
+  const inner = width - (landscape ? PAD.landscape : PAD.portrait) * 2;
+  // Landscape is a row, so flexBasis is the column's width. Portrait is a
+  // column, where flexBasis is height and the pane spans the full width.
+  return landscape ? inner * 0.55 : inner;
+}
+
+// Mean advance width as a fraction of font size, for the shipped serif faces
+// (Charis SIL in the container, Georgia locally - both Matthew Carter text
+// designs with close metrics). Only accurate enough to decide which side of
+// two lines a message falls on, which is all it is asked to do.
+//
+// Calibrated against satori's real layout over a spread of realistic messages
+// in both orientations. It is deliberately a shade high: overestimating glyph
+// width picks a smaller size than strictly needed, while underestimating picks
+// one that wraps to three lines after claiming it would fit in two, which is
+// the outcome this sizing exists to avoid. 0.48 was the largest value with no
+// overflow in that sweep.
+const AVG_CHAR_EM = 0.48;
+
+/** Greedy word wrap, counting the lines `text` would occupy. */
+function wrappedLines(text, fontSize, width) {
+  const perLine = width / (fontSize * AVG_CHAR_EM);
+  const words = String(text).trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return 1;
+
+  let lines = 1;
+  let used = 0;
+  for (const word of words) {
+    if (used === 0) { used = word.length; continue; }
+    if (used + 1 + word.length <= perLine) used += 1 + word.length;
+    else { lines += 1; used = word.length; }
+  }
+  return lines;
+}
+
 function statusPane({ mode, markdown, customText }, landscape) {
   // `weekend` is never selected directly - it arrives resolved, because the
   // device's clock is UTC with no tzdata and could not apply the rule itself.
@@ -109,23 +155,33 @@ function statusPane({ mode, markdown, customText }, landscape) {
   }
 
   if (mode === 'text') {
-    // Sized to the message: a couple of words should read from across the
-    // room, a full sentence has to fit. Wraps rather than truncating, since a
-    // half-shown message is worse than a smaller one.
-    const n = (customText || '').length;
-    const size = landscape
-      ? (n <= 18 ? 104 : n <= 44 ? 72 : 52)
-      : (n <= 18 ? 88 : n <= 44 ? 62 : 46);
+    // Match the in/out headline size, and only step down when the message will
+    // not fit in two lines at it. A short message then reads exactly like a
+    // status - same size, same weight - instead of arriving noticeably larger
+    // or smaller for no reason the reader can see.
+    //
+    // Past two lines readability wins over matching: the message still has to
+    // fit the pane, and it wraps rather than truncating, since a half-shown
+    // message is worse than a smaller one. The 120-character cap means the
+    // bottom of the ladder is reachable, so it has to be a usable size rather
+    // than a token fallback.
+    const body = customText || '—';
+    const ladder = landscape
+      ? [STATUS_SIZE.landscape, 96, 82, 70, 60, 52]
+      : [STATUS_SIZE.portrait, 84, 72, 62, 54, 46];
+    const width = statusWidth(landscape);
+    const size = ladder.find((s) => wrappedLines(body, s, width) <= 2)
+      ?? ladder[ladder.length - 1];
     return col({ justifyContent: 'center' }, [
       el('div', {
         display: 'flex', flexWrap: 'wrap',
         fontSize: size, lineHeight: 1.14,
-      }, customText || '—'),
+      }, body),
     ]);
   }
 
   if (mode === 'in' || mode === 'out') {
-    const size = landscape ? 112 : 98;
+    const size = landscape ? STATUS_SIZE.landscape : STATUS_SIZE.portrait;
     return col({ justifyContent: 'center' }, [
       txt({ fontSize: size, lineHeight: 1.08 }, config.personName),
       txt({ fontSize: size, lineHeight: 1.08 }, mode === 'in' ? 'is in today' : 'is out'),
@@ -149,7 +205,7 @@ export function buildTree({
     hour: '2-digit', minute: '2-digit', hour12: false, timeZone: config.timezone,
   });
 
-  const pad = landscape ? 56 : 62;
+  const pad = landscape ? PAD.landscape : PAD.portrait;
 
   // Landscape keeps a vertical rule between the two columns. Portrait uses
   // whitespace alone: stacked sections read fine without a line, and the
