@@ -20,9 +20,16 @@ export function controlPage({ personName }) {
 <meta name="theme-color" content="#111">
 <title>Frame</title>
 <style>
-  :root { color-scheme: light dark; --fg:#111; --bg:#fff; --line:#dcdcdc; --muted:#666; --panel:#fafafa; }
+  /* --on is the only hue on the page: "this is what the panel is showing".
+     Both values clear 3:1 against their own background and against the white
+     switch knob, which the previous ON state did not - it used --fg, so in
+     dark mode a white knob sat on a near-white track at 1.12:1 and the switch
+     looked the same on as off. */
+  :root { color-scheme: light dark; --fg:#111; --bg:#fff; --line:#dcdcdc; --muted:#666; --panel:#fafafa;
+          --on:#1a7f37; }
   @media (prefers-color-scheme: dark) {
-    :root { --fg:#f2f2f2; --bg:#141414; --line:#333; --muted:#999; --panel:#1c1c1c; }
+    :root { --fg:#f2f2f2; --bg:#141414; --line:#333; --muted:#999; --panel:#1c1c1c;
+            --on:#2ea043; }
   }
   * { box-sizing: border-box; }
   body {
@@ -52,7 +59,13 @@ export function controlPage({ personName }) {
   .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor; opacity: .3; }
   button[aria-pressed="true"] .dot { opacity: 1; }
 
-  .textrow { display: flex; gap: 8px; margin-top: 10px; }
+  .textrow { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  /* Same 9px dot as the in/out buttons, but it carries its own colour: there
+     is no pressed button here to tint it, so grey/green says whether the
+     custom message is the thing on the panel. */
+  .statusdot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto;
+               background: var(--muted); transition: background .15s; }
+  .textrow[data-active="true"] .statusdot { background: var(--on); }
   input[type=text] {
     flex: 1; font: inherit; padding: 14px; border-radius: 12px;
     border: 1.5px solid var(--line); background: var(--bg); color: var(--fg); min-width: 0;
@@ -70,8 +83,11 @@ export function controlPage({ personName }) {
   .switch { width: 50px; height: 30px; border-radius: 15px; background: var(--line);
             position: relative; flex: 0 0 auto; transition: background .15s; }
   .switch::after { content:''; position:absolute; top:3px; left:3px; width:24px; height:24px;
-                   border-radius:50%; background:#fff; transition: transform .15s; }
-  .toggle[aria-checked="true"] .switch { background: var(--fg); }
+                   border-radius:50%; background:#fff; transition: transform .15s;
+                   /* Keeps the knob visible on the pale OFF track in light mode,
+                      where white-on-#dcdcdc is 1.2:1. */
+                   box-shadow: 0 0 0 1px rgba(0,0,0,.18); }
+  .toggle[aria-checked="true"] .switch { background: var(--on); }
   .toggle[aria-checked="true"] .switch::after { transform: translateX(20px); }
 
   /* Both orientations, always. The device decides which it is showing, not
@@ -111,7 +127,8 @@ export function controlPage({ personName }) {
         <button data-display="out" aria-pressed="false"><span class="dot"></span>Out of office</button>
       </div>
 
-      <div class="textrow">
+      <div class="textrow" id="textrow" data-active="false">
+        <span class="statusdot" id="textdot" role="img" aria-label="Custom message is not showing"></span>
         <input id="text" type="text" maxlength="120" placeholder="Custom message…">
         <button id="send">Show</button>
       </div>
@@ -160,6 +177,15 @@ function say(text, isError) {
 function paint(s) {
   buttons.forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.display === s.display)));
   $('weekend').setAttribute('aria-checked', String(s.weekendMode));
+
+  // Same rule the buttons use, so the three statuses agree on what "selected"
+  // means. The dot is the only indicator here - unlike in/out there is no
+  // pressed button to read - so it also carries the label for screen readers.
+  const textOn = s.display === 'text';
+  $('textrow').dataset.active = String(textOn);
+  $('textdot').setAttribute('aria-label',
+    textOn ? 'Custom message is showing' : 'Custom message is not showing');
+
   if (document.activeElement !== $('text')) $('text').value = s.customText || '';
 
   $('cap').textContent = s.autoWeekend
