@@ -4,7 +4,10 @@ import * as store from '../src/store.js';
 
 const WEATHER = {
   current: { temp: 18, label: 'Partly cloudy', icon: 'part' },
-  today: { max: 21, min: 11 },
+  today: {
+    max: 21, min: 11,
+    rain: { am: { probability: 39, mm: 0 }, pm: { probability: 3, mm: 0.1 } },
+  },
   forecast: [{ day: 'Fri', max: 20, min: 12, label: 'Overcast', icon: 'cloud' }],
   fetchedAt: '2026-09-04T09:00:00.000Z',
 };

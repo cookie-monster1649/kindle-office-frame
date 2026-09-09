@@ -47,6 +47,72 @@ export function describeCode(code) {
   return { label, icon };
 }
 
+// The two windows the panel reports a rain chance for, as [from, until) in
+// local hours. Morning is the commute in and the first half of the day;
+// afternoon stops at 19:00 because a chance of rain after you have gone home
+// is not something a desk display can help with.
+export const RAIN_WINDOWS = {
+  am: [6, 12],
+  pm: [15, 19],
+};
+
+// A day's icon switches to rain above this chance. Not zero: Open-Meteo
+// returns single-digit probabilities on days with no rain in them at all - an
+// overcast Thursday came back at 3% with 0.0mm - and the icon is the only
+// weather signal on a forecast row, so at >0 it would show rain most days and
+// mean nothing. Snow and storm keep their own glyph either way: swapping a
+// thunderstorm for plain rain would lose the more important warning.
+const RAIN_ICON_THRESHOLD = 10;
+const KEEP_ICON = new Set(['snow', 'storm']);
+
+/**
+ * Peak chance of rain, and total expected fall, within one window of one day.
+ *
+ * Probability is the max rather than the mean: the question the panel answers
+ * is "do I need a coat", not "how much of the morning is wet". Millimetres are
+ * summed, because that one is a quantity.
+ *
+ * Hourly timestamps come back in the display timezone - the request sets
+ * `timezone` - so the hour can be read straight off the string without any
+ * conversion here.
+ */
+function windowRain(hourly, dateKey, [from, until]) {
+  let probability = 0;
+  let mm = 0;
+  let seen = false;
+
+  const times = hourly?.time || [];
+  for (let i = 0; i < times.length; i += 1) {
+    const [date, clock] = String(times[i]).split('T');
+    if (date !== dateKey) continue;
+    const hour = Number.parseInt(clock.slice(0, 2), 10);
+    if (hour < from || hour >= until) continue;
+
+    seen = true;
+    probability = Math.max(probability, hourly.precipitation_probability?.[i] ?? 0);
+    mm += hourly.precipitation?.[i] ?? 0;
+  }
+
+  // No hourly rows for the window at all - the provider dropped the field, or
+  // the day is past the end of the forecast. Say nothing rather than claim 0%.
+  if (!seen) return null;
+  return { probability: Math.round(probability), mm };
+}
+
+/**
+ * Promote a day's icon to rain when the chance is high enough to act on.
+ *
+ * Open-Meteo's weather code describes the dominant condition, so a day that is
+ * mostly overcast with a wet afternoon comes back as `cloud`. On a forecast row
+ * the icon is the only weather the panel shows, so it should carry the thing
+ * worth knowing.
+ */
+function rainAwareIcon({ label, icon }, probability) {
+  if (KEEP_ICON.has(icon)) return { label, icon };
+  if ((probability ?? 0) > RAIN_ICON_THRESHOLD) return { label, icon: 'rain' };
+  return { label, icon };
+}
+
 let cache = { at: 0, data: null };
 
 /**
@@ -69,7 +135,13 @@ export async function getWeather({ force = false } = {}) {
   url.searchParams.set('latitude', String(latitude));
   url.searchParams.set('longitude', String(longitude));
   url.searchParams.set('current', 'temperature_2m,weather_code');
-  url.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min');
+  url.searchParams.set(
+    'daily',
+    'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max',
+  );
+  // Windowed rain needs the hourly series: the daily block only carries a
+  // whole-day figure, which cannot be split into morning and afternoon.
+  url.searchParams.set('hourly', 'precipitation_probability,precipitation');
   url.searchParams.set('timezone', config.timezone);
   url.searchParams.set('forecast_days', '4');
 
@@ -89,6 +161,10 @@ export async function getWeather({ force = false } = {}) {
       today: {
         max: Math.round(json.daily.temperature_2m_max[0]),
         min: Math.round(json.daily.temperature_2m_min[0]),
+        rain: {
+          am: windowRain(json.hourly, json.daily.time[0], RAIN_WINDOWS.am),
+          pm: windowRain(json.hourly, json.daily.time[0], RAIN_WINDOWS.pm),
+        },
       },
       // Skip index 0: that is today, already shown as the current conditions.
       forecast: json.daily.time.slice(1, 4).map((date, i) => {
@@ -100,7 +176,10 @@ export async function getWeather({ force = false } = {}) {
           }),
           max: Math.round(json.daily.temperature_2m_max[n]),
           min: Math.round(json.daily.temperature_2m_min[n]),
-          ...describeCode(json.daily.weather_code[n]),
+          ...rainAwareIcon(
+            describeCode(json.daily.weather_code[n]),
+            json.daily.precipitation_probability_max?.[n],
+          ),
         };
       }),
       fetchedAt: new Date().toISOString(),

@@ -56,6 +56,55 @@ function formatDate(now, tz) {
   };
 }
 
+/**
+ * "40%" or "40% · 2.4mm" - the amount only when there is an amount to report.
+ *
+ * Suppressing a zero is not only tidiness: a dry day would otherwise read
+ * "0% · 0.0mm" twice over, which is most days of the year here, and the extra
+ * width is what lets the whole line fit the narrow landscape column. One
+ * decimal below 10mm, none above - nobody needs a tenth of a millimetre when
+ * 12mm is falling.
+ */
+function rainText({ probability, mm }) {
+  const amount = mm >= 0.05 ? ` · ${mm < 10 ? mm.toFixed(1) : Math.round(mm)}mm` : '';
+  return `${probability}%${amount}`;
+}
+
+/**
+ * Chance of rain for the morning and the afternoon, on its own line.
+ *
+ * Always a second line rather than sharing the high/low row: a wet afternoon
+ * pushes the text past the landscape column, and a line that only sometimes
+ * wraps would move the rows below it every time the forecast changed. On e-ink
+ * that reads as the panel twitching.
+ *
+ * One icon, before AM, labelling the pair. Repeating it before PM would put
+ * four small glyphs in a band that already carries the up and down arrows.
+ */
+function rainRow(rain, landscape) {
+  if (!rain?.am && !rain?.pm) return null;
+
+  // Same size in both orientations, unlike every other row here. Landscape
+  // gives this pane only 602px, and at the widest reading - "AM 100% · 25mm
+  // PM 100% · 18mm" - a larger size renders flush to the column edge. The
+  // AVG_CHAR_EM estimate says it fits, but digits and % in this serif run
+  // nearer 0.60em than the 0.48 that constant assumes, so it does not.
+  const size = 27;
+  const parts = [
+    img(iconDataUri('rain'), { width: 24, height: 24, marginRight: 10 }),
+  ];
+
+  if (rain.am) {
+    parts.push(txt({ fontSize: size, marginRight: rain.pm ? 22 : 0 },
+      `AM ${rainText(rain.am)}`));
+  }
+  if (rain.pm) {
+    parts.push(txt({ fontSize: size }, `PM ${rainText(rain.pm)}`));
+  }
+
+  return row({ marginTop: 12, alignItems: 'center' }, parts);
+}
+
 function weatherPane(weather, landscape) {
   if (!weather) {
     // A visible gap, not an empty column: a weather outage should look like
@@ -84,6 +133,8 @@ function weatherPane(weather, landscape) {
       txt({ fontSize: landscape ? 34 : 31 }, `${weather.today.min}°`),
     ]),
 
+    rainRow(weather.today.rain, landscape),
+
     rule(landscape, landscape ? 26 : 24, landscape ? 26 : 24),
 
     col({}, weather.forecast.map((d) =>
@@ -94,7 +145,7 @@ function weatherPane(weather, landscape) {
           `${d.max}° / ${d.min}°`),
       ])
     )),
-  ]);
+  ].filter(Boolean));
 }
 
 // Outer padding, shared with frameTree below so the width the sizing maths

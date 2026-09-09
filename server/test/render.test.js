@@ -15,7 +15,10 @@ import { DEVICE } from '../src/config.js';
 
 const WEATHER = {
   current: { temp: 18, label: 'Partly cloudy', icon: 'part' },
-  today: { max: 21, min: 11 },
+  today: {
+    max: 21, min: 11,
+    rain: { am: { probability: 39, mm: 0 }, pm: { probability: 3, mm: 0.1 } },
+  },
   forecast: [
     { day: 'Fri', max: 20, min: 12, label: 'Overcast', icon: 'cloud' },
     { day: 'Sat', max: 23, min: 13, label: 'Clear', icon: 'sun' },
