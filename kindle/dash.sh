@@ -21,7 +21,7 @@ DASH_PNG="$DIR/dash.png"
 SCREENS="$DIR/screens"
 FETCH_CMD="$DIR/local/fetch-dashboard.sh"
 
-REFRESH_SCHEDULE=${REFRESH_SCHEDULE:-"*/15 * * * *"}
+REFRESH_SCHEDULE=${REFRESH_SCHEDULE:-"0 7-18 * * MON-FRI;*/15 7-8 * * MON-FRI;0 7 * * SAT,SUN"}
 FULL_DISPLAY_REFRESH_RATE=${FULL_DISPLAY_REFRESH_RATE:-4}
 MENU_TIMEOUT=${MENU_TIMEOUT:-30}
 
@@ -296,6 +296,54 @@ log_battery() {
   echo "$(date) Battery: $(gasgauge-info -c 2>/dev/null)"
 }
 
+# Seconds until the next scheduled poll.
+#
+# REFRESH_SCHEDULE holds one or more cron expressions separated by ';'.
+# next-wakeup takes a single expression, and one 5-field expression cannot
+# describe a schedule whose minute field changes with the hour - "every 15
+# minutes on weekday mornings, hourly the rest of the day, never overnight"
+# needs the minutes to be */15 for some hours and 0 for others. Asking each
+# expression when it would next fire and taking the earliest does describe it,
+# and overlapping expressions are harmless because the earliest simply wins.
+next_wakeup() {
+  earliest=""
+  old_ifs=$IFS
+
+  IFS=';'
+  for expr in $REFRESH_SCHEDULE; do
+    IFS=$old_ifs
+    [ -n "$expr" ] || continue
+
+    secs=$("$DIR/next-wakeup" --schedule="$expr" --timezone="$TIMEZONE" 2>/dev/null)
+
+    # A rejected expression exits non-zero and prints nothing usable. Skip it
+    # instead of letting an empty string reach the arithmetic below, where it
+    # would be a syntax error and take the loop down.
+    case "$secs" in
+      '' | *[!0-9]*)
+        echo "Ignoring unusable schedule '$expr'" >&2
+        IFS=';'
+        continue
+        ;;
+    esac
+
+    if [ -z "$earliest" ] || [ "$secs" -lt "$earliest" ]; then
+      earliest=$secs
+    fi
+    IFS=';'
+  done
+  IFS=$old_ifs
+
+  # Nothing parsed. An hour keeps a misconfigured device coming back on its
+  # own rather than suspending with no alarm armed, which needs a hard reset.
+  if [ -z "$earliest" ]; then
+    echo "No usable schedule in '$REFRESH_SCHEDULE'; falling back to 3600s" >&2
+    earliest=3600
+  fi
+
+  echo "$earliest"
+}
+
 init() {
   if [ -z "$TIMEZONE" ] || [ -z "$REFRESH_SCHEDULE" ]; then
     echo "Missing configuration. Timezone: ${TIMEZONE:-unset}, schedule: ${REFRESH_SCHEDULE:-unset}."
@@ -315,7 +363,7 @@ main_loop() {
   while true; do
     log_battery
 
-    next_wakeup_secs=$("$DIR/next-wakeup" --schedule="$REFRESH_SCHEDULE" --timezone="$TIMEZONE")
+    next_wakeup_secs=$(next_wakeup)
     render_current
 
     # A moment before suspending, so the loop can be interrupted over SSH.
