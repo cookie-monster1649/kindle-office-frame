@@ -25,6 +25,12 @@ REFRESH_SCHEDULE=${REFRESH_SCHEDULE:-"0 7-18 * * MON-FRI;*/15 7-8 * * MON-FRI;0 
 FULL_DISPLAY_REFRESH_RATE=${FULL_DISPLAY_REFRESH_RATE:-4}
 MENU_TIMEOUT=${MENU_TIMEOUT:-30}
 
+# A failed refresh is retried on a short delay rather than costing a whole
+# scheduled interval. Multiplied by the attempt number, so the gaps widen:
+# 2, 4, 6 minutes, then back to the ordinary schedule.
+FETCH_RETRY_DELAY=${FETCH_RETRY_DELAY:-120}
+FETCH_RETRY_MAX=${FETCH_RETRY_MAX:-3}
+
 RTC_LEGACY=/sys/devices/platform/mxc_rtc.0/wakeup_enable
 RTC_GENERIC=/sys/class/rtc/rtc0/wakealarm
 RTC=""
@@ -194,15 +200,115 @@ notify() {
 
 # -------------------------------------------------------------- content ----
 
+# ------------------------------------------------------------- network ----
+#
+# The radio is off through suspend and takes 5-15 seconds to associate again
+# after a wake. Every fetch therefore starts against a network that does not
+# work yet, and the failure is immediate rather than slow: with no route, the
+# request errors out in milliseconds instead of using its timeout. Three
+# attempts three seconds apart is under ten seconds of trying, so the device
+# would give up and suspend just as the radio came up.
+#
+# This waits for the local network to actually be usable before asking for
+# anything. It is not the ICMP pre-check that was rejected before, and for the
+# same reason: that probed the *server*, which a host with ICMP filtered would
+# fail while HTTP worked. These are local facts about this device's own radio,
+# and none of them can be wrong about a remote host.
+NETWORK_WAIT=${NETWORK_WAIT:-45}
+
+# 0 ready, 1 not ready, 2 cannot tell.
+network_ready() {
+  # wifid is the device's own view of association, and the cheapest to ask.
+  state=$(lipc-get-prop com.lab126.wifid cmState 2>/dev/null)
+  case "$state" in
+    CONNECTED|READY) return 0 ;;
+    '')              ;;        # wifid not answering - fall through
+    *)               return 1 ;;  # SCANNING, PENDING, NA, disconnected
+  esac
+
+  # Busybox ifconfig prints "inet addr:10.0.4.52"; some builds print "inet
+  # 10.0.4.52". An address on the wireless interface means DHCP has completed.
+  if ifconfig wlan0 >/dev/null 2>&1; then
+    ifconfig wlan0 2>/dev/null | grep -qE 'inet (addr:)?[0-9]+\.' && return 0
+    return 1
+  fi
+
+  return 2
+}
+
+# The host part of FRAME_URL: strip scheme, then userinfo, then path, then
+# port. Only used to ask the resolver a question.
+frame_host() {
+  echo "$FRAME_URL" \
+    | sed -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://||' -e 's|[/?].*$||' \
+          -e 's|^.*@||' -e 's|:[0-9]*$||'
+}
+
+# Association is not enough. The observed failure on this device is not a
+# missing route, it is DNS:
+#
+#   dns error: failed to lookup address information: Try again
+#
+# The radio associates and DHCP completes, but the resolver is not usable for
+# another moment, so a fetch fired the instant an address appears still fails.
+# This asks the *local* resolver to resolve one name - it is not a reachability
+# probe of the server, and a server that is down still answers here.
+dns_ready() {
+  host=$(frame_host)
+  [ -n "$host" ] || return 0
+
+  # A bare IP needs no resolver.
+  case "$host" in
+    *[!0-9.]*) ;;
+    *) return 0 ;;
+  esac
+
+  # No resolver tool: not something to block on.
+  command -v nslookup >/dev/null 2>&1 || return 0
+
+  nslookup "$host" >/dev/null 2>&1
+}
+
+# Block until the network is actually usable, or the budget runs out. Never
+# fails the caller: a fetch over a network that turns out not to work is no
+# worse than today's behaviour, and the fetch has its own retries underneath.
+wait_for_network() {
+  budget=${1:-$NETWORK_WAIT}
+  waited=0
+
+  network_ready
+  if [ "$?" = 2 ]; then
+    # No way to inspect the radio on this firmware. Give it a flat settle
+    # window anyway - an unconditional short wait is what makes this robust
+    # on a device whose state we cannot read.
+    echo "Cannot read network state; settling for 10s"
+    sleep 10
+    return 0
+  fi
+
+  while :; do
+    if network_ready && dns_ready; then
+      [ "$waited" -gt 0 ] && echo "Network up after ${waited}s"
+      return 0
+    fi
+    [ "$waited" -ge "$budget" ] && break
+    sleep 2
+    waited=$((waited + 2))
+  done
+
+  echo "Network still not ready after ${budget}s; trying anyway"
+  return 0
+}
+
 refresh_from_server() {
   announce=${1:-no}
 
   [ "$announce" = yes ] && notify "Fetching from server..." "$FRAME_URL"
 
-  # No separate reachability probe: the fetch itself retries with a short
-  # timeout. A ping-based pre-check misreports any host that filters ICMP,
-  # which includes a Mac with stealth mode on - it would block a fetch that
-  # would otherwise have succeeded.
+  # Wait for the radio before spending the fetch's retries on a network that
+  # is not up yet. Without this the attempts are consumed in the first few
+  # seconds after a wake, which is exactly when they cannot succeed.
+  wait_for_network
 
   # The device's own settings, passed as query parameters so the server can
   # render to match. These select a rendering; they do not change any server
@@ -229,8 +335,11 @@ refresh_from_server() {
       ;;
     *)
       echo "Fetch failed ($status)"
+      # The last line is the summary - "HEAD failed after 4 attempts: ..." -
+      # where the first is only ever "no response, attempt 1", which says
+      # nothing about why.
       [ "$announce" = yes ] && notify "Could not fetch the frame." \
-        "$(echo "$err" | head -n 1)" \
+        "$(echo "$err" | grep -v '^[[:space:]]*$' | tail -n 1)" \
         "" \
         "Press power for the menu."
       return 1
@@ -360,17 +469,39 @@ init() {
 }
 
 main_loop() {
+  fetch_failures=0
+
   while true; do
     log_battery
 
     next_wakeup_secs=$(next_wakeup)
     render_current
+    render_status=$?
+
+    # A failed fetch used to cost a whole scheduled interval, because the loop
+    # suspended until the next cron slot regardless. That was survivable when
+    # the device polled every couple of minutes. It is not now: a failure at
+    # 18:00 would leave a stale panel until 07:00 the next morning, and one on
+    # Saturday would hold it until Sunday. Retry soon instead, then fall back
+    # to the schedule so a genuinely offline server cannot keep the radio busy
+    # all night.
+    if [ "$render_status" -ne 0 ] && [ "$fetch_failures" -lt "$FETCH_RETRY_MAX" ]; then
+      fetch_failures=$((fetch_failures + 1))
+      sleep_secs=$((FETCH_RETRY_DELAY * fetch_failures))
+      # Never postpone a scheduled poll that would have come sooner.
+      [ "$sleep_secs" -gt "$next_wakeup_secs" ] && sleep_secs=$next_wakeup_secs
+      echo "Refresh failed; retrying in ${sleep_secs}s (${fetch_failures}/${FETCH_RETRY_MAX})"
+    else
+      [ "$render_status" -eq 0 ] || echo "Refresh still failing; waiting for the next scheduled poll"
+      fetch_failures=0
+      sleep_secs=$next_wakeup_secs
+    fi
 
     # A moment before suspending, so the loop can be interrupted over SSH.
     sleep 10
 
-    echo "Suspending, next wakeup in ${next_wakeup_secs}s"
-    rtc_sleep "$next_wakeup_secs"
+    echo "Suspending, next wakeup in ${sleep_secs}s"
+    rtc_sleep "$sleep_secs"
 
     if woke_early; then
       echo "Woke before the alarm: power button"

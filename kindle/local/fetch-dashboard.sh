@@ -63,15 +63,15 @@ etag=""
 # Headers are REQUEST_ITEMs and must follow the method and URL, not precede
 # them, or xh parses the first header as the URL.
 #
-# Retried with a short timeout rather than gated behind a separate reachability
-# probe. The radio is down during suspend and needs a few seconds afterwards,
-# but a ping-based pre-check is the wrong tool: a host with ICMP filtered -
-# macOS stealth mode, say - never answers, so the check fails while HTTP would
-# have worked perfectly. Letting the real request retry tests the one thing
-# that actually matters.
+# Still no reachability probe against the server: a host with ICMP filtered -
+# macOS stealth mode, say - never answers, so the check would fail while HTTP
+# worked perfectly. dash.sh waits on the *local* radio before calling this,
+# which is a different question and one this device can answer about itself.
+# These retries remain the backstop for everything after association: DHCP,
+# DNS, and a server that is briefly slow to answer.
 attempt=1
 status=""
-while [ "$attempt" -le "${FETCH_ATTEMPTS:-3}" ]; do
+while [ "$attempt" -le "${FETCH_ATTEMPTS:-4}" ]; do
   set -- --ignore-stdin --print=h --output "$HDR_FILE" \
          --timeout "${FETCH_TIMEOUT:-10}" HEAD "$URL"
   [ -n "$auth_header" ]      && set -- "$@" "$auth_header"
@@ -88,9 +88,13 @@ while [ "$attempt" -le "${FETCH_ATTEMPTS:-3}" ]; do
 
   [ -n "$status" ] && break
 
+  # Widening gaps rather than a flat three seconds. dash.sh already waits for
+  # the radio before calling this, so reaching here means something slower is
+  # wrong - DHCP still running, DNS not answering yet - and those resolve on
+  # the scale of seconds, not milliseconds.
   echo "No response (attempt $attempt), waiting for the network..."
+  sleep $((attempt * 3))
   attempt=$((attempt + 1))
-  sleep 3
 done
 
 if [ -z "$status" ]; then
