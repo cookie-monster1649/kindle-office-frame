@@ -234,11 +234,23 @@ function statusPane({ mode, markdown, customText }, landscape) {
     ]);
   }
 
-  if (mode === 'in' || mode === 'out') {
+  if (mode === 'in') {
     const size = landscape ? STATUS_SIZE.landscape : STATUS_SIZE.portrait;
     return col({ justifyContent: 'center' }, [
-      txt({ fontSize: size, lineHeight: 1.08 }, config.personName),
-      txt({ fontSize: size, lineHeight: 1.08 }, mode === 'in' ? 'is in today' : 'is out'),
+      txt({ fontSize: size, lineHeight: 1.08 }, `${config.personName} is in`),
+      txt({ fontSize: size, lineHeight: 1.08 }, 'today'),
+    ]);
+  }
+
+  if (mode === 'out') {
+    // The headline stays at in-office size; the invitation below it sits a
+    // step down so it reads as a subtitle rather than a second statement.
+    const size = landscape ? STATUS_SIZE.landscape : STATUS_SIZE.portrait;
+    const sub = Math.round(size * 0.68);
+    return col({ justifyContent: 'center' }, [
+      txt({ fontSize: size, lineHeight: 1.08 }, `${config.personName} is out`),
+      txt({ fontSize: sub, lineHeight: 1.12, marginTop: landscape ? 18 : 14 },
+        'Please use this desk'),
     ]);
   }
   return col({ justifyContent: 'center' }, markdownToTree(markdown, landscape ? 1.06 : 1));
