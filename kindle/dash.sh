@@ -300,6 +300,13 @@ wait_for_network() {
   return 0
 }
 
+# announce is one of:
+#   no       a scheduled poll. The frame is already on screen, so unchanged
+#            content means there is nothing to do.
+#   yes      a menu choice. Say what is happening, and repaint even when
+#            unchanged, because the menu is what is on screen.
+#   restore  the menu timed out. The menu is still on screen, so this must
+#            repaint just like `yes`, but silently - nobody chose anything.
 refresh_from_server() {
   announce=${1:-no}
 
@@ -323,10 +330,16 @@ refresh_from_server() {
 
   case "$status" in
     20)
-      echo "Content unchanged, leaving screen as-is"
-      # On an explicit menu choice the screen is still showing the menu, so
-      # "unchanged" would leave the wrong thing up. Repaint the cached frame.
-      [ "$announce" = yes ] && [ -f "$DASH_PNG" ] && paint "$DASH_PNG"
+      # After the menu - chosen or timed out - the menu is what is on screen,
+      # so "unchanged" would leave it there. That is exactly how the menu used
+      # to outlive a timeout: every later poll also came back 304 and left it
+      # up, for hours. Repaint the cached frame whenever the menu was shown.
+      if [ "$announce" = no ]; then
+        echo "Content unchanged, leaving screen as-is"
+      else
+        echo "Content unchanged, repainting the cached frame over the menu"
+        [ -f "$DASH_PNG" ] && paint "$DASH_PNG"
+      fi
       return 0
       ;;
     0)
@@ -342,6 +355,10 @@ refresh_from_server() {
         "$(echo "$err" | grep -v '^[[:space:]]*$' | tail -n 1)" \
         "" \
         "Press power for the menu."
+      # Nobody is watching a timed-out menu, so an error message would sit
+      # there unread. The last good frame is a better thing to leave up; the
+      # retry path will replace it once the fetch works.
+      [ "$announce" = restore ] && [ -f "$DASH_PNG" ] && paint "$DASH_PNG"
       return 1
       ;;
   esac
@@ -392,9 +409,10 @@ show_menu() {
       ;;
     *)
       # Timed out, or the menu could not run. Restore the current view rather
-      # than leaving the menu on screen.
+      # than leaving the menu on screen - `restore`, not a plain refresh, so a
+      # 304 still repaints.
       force_full_refresh
-      render_current
+      render_current restore
       ;;
   esac
 }
@@ -504,7 +522,9 @@ main_loop() {
     rtc_sleep "$sleep_secs"
 
     if woke_early; then
-      echo "Woke before the alarm: power button"
+      # Timestamped with the margin, so a wake nobody caused can be told apart
+      # from a real press after the fact.
+      echo "$(date) Woke $((WAKE_TARGET - $(date +%s)))s before the alarm: power button"
       show_menu
     fi
   done
