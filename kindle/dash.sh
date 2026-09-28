@@ -126,6 +126,50 @@ woke_early() {
   [ "$(date +%s)" -lt $((WAKE_TARGET - 5)) ]
 }
 
+# woke_early() is only ever as good as the signal it is reading, and that
+# signal is not reliable. dmesg has caught the PMIC's onkey line firing a
+# "button online event" with nobody at the desk - once, 531 seconds before
+# its armed alarm. The kernel itself believed it was a press; there is no
+# more authoritative wake-reason to check against. woke_early() cannot be
+# fixed to see through that, because it is reading the same fact the kernel
+# used to decide.
+#
+# What a false trigger never produces, and a real press always does, is a
+# tap afterwards - the menu is the only reason to press power at all. So
+# before paying for show_menu() (a forced flashing refresh, then up to
+# MENU_TIMEOUT seconds showing the menu instead of the frame), wait briefly
+# and silently for one real touch to confirm someone is actually there.
+# Nothing is painted during this wait: a false trigger this way costs a few
+# seconds awake and nothing visible on the panel, instead of a flash to the
+# menu and back.
+TOUCH_DEV="${TOUCH_DEV:-/dev/input/event1}"
+EVTEST="${EVTEST:-/mnt/us/usbnet/bin/evtest}"
+WAKE_CONFIRM_WINDOW=${WAKE_CONFIRM_WINDOW:-4}
+
+wake_confirmed_by_touch() {
+  [ -x "$EVTEST" ] && [ -r "$TOUCH_DEV" ] || return 0  # cannot check - assume real
+
+  log="/tmp/wake_confirm.$$"
+  "$EVTEST" "$TOUCH_DEV" >"$log" 2>&1 &
+  pid=$!
+
+  waited=0
+  confirmed=1
+  while [ "$waited" -lt "$WAKE_CONFIRM_WINDOW" ]; do
+    if grep -q "BTN_TOUCH.*value 1" "$log" 2>/dev/null; then
+      confirmed=0
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+
+  kill "$pid" 2>/dev/null
+  wait "$pid" 2>/dev/null
+  rm -f "$log"
+  return "$confirmed"
+}
+
 # ------------------------------------------------------------------- ui ----
 #
 # Never stop the framework or lab126_gui: both kill cvm, the Java process that
@@ -504,8 +548,18 @@ main_loop() {
     rtc_sleep "$sleep_secs"
 
     if woke_early; then
-      echo "Woke before the alarm: power button"
-      show_menu
+      if wake_confirmed_by_touch; then
+        echo "Woke before the alarm: power button"
+        show_menu
+      else
+        # No tap followed - the onkey line fired on its own. Go back to sleep
+        # for whatever is left of the original target rather than a fresh
+        # full interval, so a false trigger costs the confirm window and
+        # nothing else.
+        remaining=$((WAKE_TARGET - $(date +%s)))
+        echo "Woke before the alarm but no touch followed - not a press, back to sleep"
+        [ "$remaining" -gt 0 ] && rtc_sleep "$remaining"
+      fi
     fi
   done
 }
