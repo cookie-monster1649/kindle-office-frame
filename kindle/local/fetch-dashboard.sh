@@ -55,8 +55,11 @@ if [ -n "$CF_ACCESS_CLIENT_ID" ] && [ -n "$CF_ACCESS_CLIENT_SECRET" ]; then
   cf_secret_header="CF-Access-Client-Secret:$CF_ACCESS_CLIENT_SECRET"
 fi
 
+# Only claim to have a frame if there is one to repaint. An ETag left behind
+# after the image was lost would earn a 304 on every poll forever, with
+# nothing on disk to paint.
 etag=""
-[ -f "$ETAG_FILE" ] && etag=$(cat "$ETAG_FILE" 2>/dev/null)
+[ -f "$ETAG_FILE" ] && [ -s "$OUT" ] && etag=$(cat "$ETAG_FILE" 2>/dev/null)
 
 # --- 1. Conditional HEAD ------------------------------------------------
 # xh's grammar is: xh [OPTIONS] <[METHOD] URL> [REQUEST_ITEM]...

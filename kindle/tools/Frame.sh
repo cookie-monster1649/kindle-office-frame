@@ -1,7 +1,7 @@
 #!/bin/sh
 # Name: Frame
 # Author: desk display
-# Description: Start the desk dashboard. Press power then tap Close to come back.
+# Description: Start the desk dashboard. Hold power for 2s, then tap Exit to come back.
 #
 # Lives in documents/ so sh_integration surfaces it as a library item.
 #
@@ -22,7 +22,7 @@ if [ ! -x "$DASH_DIR/dash.sh" ]; then
   exit 1
 fi
 
-if ps 2>/dev/null | grep -q "[d]ash.sh"; then
+if pgrep -f "$DASH_DIR/dash.sh" >/dev/null 2>&1; then
   echo "Already running."
   exit 0
 fi
@@ -35,7 +35,7 @@ mkdir -p "$(dirname "$LOG")"
 echo "Starting dashboard..."
 echo "The Kindle interface will close shortly."
 echo ""
-echo "To come back: press power, then tap Close."
+echo "To come back: hold power for 2s, then tap Exit."
 sleep 2
 
 if command -v setsid >/dev/null 2>&1; then

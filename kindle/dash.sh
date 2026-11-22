@@ -49,6 +49,9 @@ num_refresh=0
 STATE_DIR="$DIR/local/state"
 MODE_FILE="$STATE_DIR/mode"
 ORIENT_FILE="$STATE_DIR/orientation"
+# Present while Frame should be on the screen. boot.sh restarts Frame after a
+# reboot only if this exists; a deliberate Exit removes it.
+AUTOSTART_FILE="$STATE_DIR/autostart"
 
 MODE="server"
 ORIENT="portrait"
@@ -118,12 +121,85 @@ rtc_sleep() {
 }
 
 # The touch panel is not a wake source on this device but the PMIC onkey is,
-# so the only way in is: press power to wake early, then tap. There is no
+# so the only way in is: hold power to wake early, then tap. There is no
 # kernel wake-reason to read, so infer it from the clock - an RTC wakeup lands
 # on its target, a button press arrives before it.
 woke_early() {
   [ "$WAKE_TARGET" -gt 0 ] || return 1
   [ "$(date +%s)" -lt $((WAKE_TARGET - 5)) ]
+}
+
+# An early wake is not proof of a press. dmesg has caught the PMIC onkey
+# logging a "button online event" with nobody at the desk, 531s before the
+# alarm, and every one of those used to throw the menu up over the frame.
+#
+# So the menu needs the power button *held*. A spurious onkey event is a blip,
+# and a quick press is over before resume finishes, so by the time this runs
+# the key reads as released. A deliberate hold is still down. This asks the
+# kernel for the key's current state (EVIOCGKEY, via `evtest --query`) rather
+# than watching for events, because the press itself happened during resume,
+# before anything here could be listening.
+#
+# Keep LONG_PRESS_SECS well under the Kindle's own hold thresholds (the
+# power-off dialog at ~7s, a hard reset at ~20s).
+EVTEST="${EVTEST:-/mnt/us/usbnet/bin/evtest}"
+LONG_PRESS_SECS=${LONG_PRESS_SECS:-2}
+POWER_DEV="${POWER_DEV:-}"
+
+# The input device that reports KEY_POWER, from /proc/bus/input/devices. A
+# block whose key bitmap includes code 116 (KEY_POWER) - bit 20 of the fourth
+# 32-bit word from the right. Matching by name is a fallback.
+find_power_dev() {
+  [ -n "$POWER_DEV" ] && { echo "$POWER_DEV"; return; }
+  awk '
+    /^N: Name=/   { name = tolower($0) }
+    /^H: Handlers=/ { ev = ""; for (i = 1; i <= NF; i++) if ($i ~ /^event[0-9]+$/) ev = $i }
+    /^B: KEY=/ {
+      n = split(substr($0, 8), w, " ")
+      word = (n >= 4) ? w[n - 3] : ""
+      if (word != "" && ev != "") {
+        v = 0
+        for (i = 1; i <= length(word); i++)
+          v = v * 16 + index("0123456789abcdef", substr(word, i, 1)) - 1
+        if (int(v / 1048576) % 2 == 1) { print "/dev/input/" ev; found = 1; exit }
+      }
+    }
+    /^$/ { if (!byname && ev != "" && name ~ /onkey|pwrkey|power/) byname = "/dev/input/" ev }
+    END { if (!found && byname) print byname }
+  ' /proc/bus/input/devices 2>/dev/null
+}
+
+# 0 the key is held, 1 it is not, 2 cannot tell.
+power_key_down() {
+  "$EVTEST" --query "$1" EV_KEY KEY_POWER >/dev/null 2>&1
+  case "$?" in
+    10) return 0 ;;
+    0)  return 1 ;;
+    *)  return 2 ;;
+  esac
+}
+
+# 0 when the power button is held for LONG_PRESS_SECS from now.
+long_press() {
+  dev=$(find_power_dev)
+  if [ ! -x "$EVTEST" ] || [ -z "$dev" ] || [ ! -r "$dev" ]; then
+    echo "Cannot read the power button (dev=${dev:-none}); treating the wake as a press"
+    return 0
+  fi
+
+  ticks=$((LONG_PRESS_SECS * 4))
+  i=0
+  while [ "$i" -lt "$ticks" ]; do
+    power_key_down "$dev"
+    case "$?" in
+      1) return 1 ;;
+      2) echo "evtest --query unsupported on $dev; treating the wake as a press"
+         return 0 ;;
+    esac
+    usleep 250000 2>/dev/null || sleep 1
+    i=$((i + 1))
+  done
+  return 0
 }
 
 # ------------------------------------------------------------------- ui ----
@@ -164,9 +240,22 @@ start_ui() {
 
 # -------------------------------------------------------------- painting ---
 
+# 1 whenever the panel shows something other than the current view: the
+# Kindle UI at launch, the menu, a "Fetching..." or error message. A 304 means
+# the *frame* is unchanged, not that the frame is on screen, so an unchanged
+# poll repaints the cached frame while this is set and only leaves the screen
+# alone when it is clear.
+#
+# This replaces reasoning about which path we arrived by. That reasoning is how
+# the menu, and later the error message after a failed tap, each outlived
+# every following poll: some path painted over the frame and the next 304
+# assumed the frame was still there.
+SCREEN_DIRTY=1
+
 paint() {
   img="$1"
   [ -f "$img" ] || { echo "missing screen: $img"; return 1; }
+  SCREEN_DIRTY=0
 
   if [ "$num_refresh" -ge "$FULL_DISPLAY_REFRESH_RATE" ]; then
     num_refresh=0
@@ -190,6 +279,7 @@ force_full_refresh() { num_refresh=$FULL_DISPLAY_REFRESH_RATE; }
 #
 # eips takes character cells rather than pixels, hence the small integers.
 notify() {
+  SCREEN_DIRTY=1
   /usr/sbin/eips -c >/dev/null 2>&1
   row=6
   for line in "$@"; do
@@ -301,12 +391,12 @@ wait_for_network() {
 }
 
 # announce is one of:
-#   no       a scheduled poll. The frame is already on screen, so unchanged
-#            content means there is nothing to do.
-#   yes      a menu choice. Say what is happening, and repaint even when
-#            unchanged, because the menu is what is on screen.
-#   restore  the menu timed out. The menu is still on screen, so this must
-#            repaint just like `yes`, but silently - nobody chose anything.
+#   no       a scheduled poll. Silent.
+#   yes      a menu choice. Say what is happening, and report a failure.
+#   restore  the menu timed out. Silent, and on failure fall back to the last
+#            good frame rather than leave the menu up.
+# Whether an unchanged frame is repainted is decided by SCREEN_DIRTY, not by
+# this.
 refresh_from_server() {
   announce=${1:-no}
 
@@ -330,15 +420,11 @@ refresh_from_server() {
 
   case "$status" in
     20)
-      # After the menu - chosen or timed out - the menu is what is on screen,
-      # so "unchanged" would leave it there. That is exactly how the menu used
-      # to outlive a timeout: every later poll also came back 304 and left it
-      # up, for hours. Repaint the cached frame whenever the menu was shown.
-      if [ "$announce" = no ]; then
+      if [ "$SCREEN_DIRTY" = 0 ]; then
         echo "Content unchanged, leaving screen as-is"
       else
-        echo "Content unchanged, repainting the cached frame over the menu"
-        [ -f "$DASH_PNG" ] && paint "$DASH_PNG"
+        echo "Content unchanged, repainting the cached frame"
+        paint "$DASH_PNG" || return 1
       fi
       return 0
       ;;
@@ -354,7 +440,7 @@ refresh_from_server() {
       [ "$announce" = yes ] && notify "Could not fetch the frame." \
         "$(echo "$err" | grep -v '^[[:space:]]*$' | tail -n 1)" \
         "" \
-        "Press power for the menu."
+        "Hold power for the menu."
       # Nobody is watching a timed-out menu, so an error message would sit
       # there unread. The last good frame is a better thing to leave up; the
       # retry path will replace it once the fetch works.
@@ -378,6 +464,8 @@ show_menu() {
   echo "Showing menu ($ORIENT)"
   force_full_refresh
 
+  # modal.sh paints the menu itself, outside paint().
+  SCREEN_DIRTY=1
   choice=$(MODAL_PNG="$(screen_png menu)" \
            MODAL_REGIONS="$(screen_regions menu)" \
            MODAL_TIMEOUT="$MENU_TIMEOUT" \
@@ -404,6 +492,7 @@ show_menu() {
       ;;
     exit)
       echo "Exiting"
+      rm -f "$AUTOSTART_FILE"
       start_ui
       exit 0
       ;;
@@ -481,6 +570,8 @@ init() {
   load_state
   echo "Starting Frame (mode=$MODE orientation=$ORIENT schedule=$REFRESH_SCHEDULE)"
 
+  : >"$AUTOSTART_FILE"
+
   stop_ui
   echo powersave >/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor 2>/dev/null
   lipc-set-prop com.lab126.powerd preventScreenSaver 1 2>/dev/null
@@ -521,17 +612,35 @@ main_loop() {
     echo "Suspending, next wakeup in ${sleep_secs}s"
     rtc_sleep "$sleep_secs"
 
-    if woke_early; then
-      # Timestamped with the margin, so a wake nobody caused can be told apart
-      # from a real press after the fact.
-      echo "$(date) Woke $((WAKE_TARGET - $(date +%s)))s before the alarm: power button"
-      show_menu
-    fi
+    # Only a held power button opens the menu. Anything else that wakes the
+    # device early - a spurious onkey event, a brush of the button - goes
+    # straight back to sleep for what is left of the original alarm, with
+    # nothing painted, so the frame stays exactly as it was.
+    while woke_early; do
+      margin=$((WAKE_TARGET - $(date +%s)))
+      if long_press; then
+        echo "$(date) Power held ${LONG_PRESS_SECS}s, ${margin}s before the alarm: menu"
+        show_menu
+        break
+      fi
+      echo "$(date) Woke ${margin}s before the alarm without a long press; back to sleep"
+      # Also stops a suspend that fails instantly from spinning this loop.
+      sleep 2
+      rtc_sleep "$margin"
+    done
   done
 }
 
 init
-# Show the menu on launch so the first thing you get is a choice, and so
-# there is always a visible way out without needing the power button.
-show_menu
+# Show the menu on a manual launch, so the first thing you get is a choice and
+# there is always a visible way out. Not after a reboot: boot.sh sets
+# FRAME_AUTOSTART, and the device goes straight back to the view it was
+# showing. SCREEN_DIRTY is still set, so even a 304 paints the cached frame
+# over the Kindle UI.
+if [ "${FRAME_AUTOSTART:-0}" = 1 ]; then
+  echo "Autostarted after boot; resuming $MODE without the menu"
+  force_full_refresh
+else
+  show_menu
+fi
 main_loop

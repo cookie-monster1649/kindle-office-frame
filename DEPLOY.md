@@ -270,6 +270,31 @@ or a 403 from Cloudflare Access if the service token is what got wiped.
 
 Then tap **Frame** in the Kindle library.
 
+### Autostart after a reboot
+
+Without this, any reboot - a crash, a flat battery, Restart in the Kindle's
+settings - leaves the Kindle UI on screen until someone taps Frame again.
+
+The only file on the read-only root is a five-line upstart job that hands off
+to `boot.sh` on the userstore. `boot.sh` starts Frame only if it was running
+(`local/state/autostart`, which `dash.sh` writes on start and removes on
+**Exit**) and `DISABLE_AUTOSTART` does not exist.
+
+```sh
+# after the rsync above, so boot.sh is already on the device
+scp kindle/upstart/frame.conf kindle:/tmp/frame.conf
+ssh kindle 'mntroot rw && cp /tmp/frame.conf /etc/upstart/frame.conf \
+            && chmod 644 /etc/upstart/frame.conf; mntroot ro'
+```
+
+To turn it off without touching the root: tap **Exit** in the menu, or create
+`DISABLE_AUTOSTART` in the `dashboard` folder over USB or SSH. To remove it
+completely:
+
+```sh
+ssh kindle 'mntroot rw && rm -f /etc/upstart/frame.conf; mntroot ro'
+```
+
 ---
 
 ## 5. Checking it worked

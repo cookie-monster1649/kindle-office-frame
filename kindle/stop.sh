@@ -2,6 +2,8 @@
 # Stop the dashboard and hand the screen back to the Kindle UI.
 # Mirrors dash.sh's start_ui(): nothing was killed, so nothing is restarted.
 pkill -f "/mnt/us/dashboard/dash.sh"
+# A deliberate stop, so do not bring Frame back on the next boot.
+rm -f /mnt/us/dashboard/local/state/autostart
 sleep 1
 
 killall -CONT awesome 2>/dev/null
