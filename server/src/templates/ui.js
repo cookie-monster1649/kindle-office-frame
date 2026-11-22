@@ -82,6 +82,12 @@ export function controlPage({ personName }) {
     border: 0; background: transparent; color: inherit; padding: 0;
   }
   input[type=text]:focus { outline: none; }
+
+  /* Title over subtitle, mirroring the panel: the subtitle is a step down, as
+     "Please use this desk" is under the out card. */
+  .fields { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+  .fields input { width: 100%; }
+  #subtitle { font-size: 14px; }
   input[type=text]::placeholder { color: var(--muted); opacity: 1; }
   .custom[data-active="true"] input::placeholder { color: var(--bg); opacity: .6; }
 
@@ -129,7 +135,8 @@ export function controlPage({ personName }) {
               transform: translate(-50%, -50%) rotate(-90deg); border-radius: 0; }
   .preview .cap { color: var(--muted); font-size: 12px; margin-top: 8px;
                   text-transform: uppercase; letter-spacing: .06em; }
-  .showing { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
+  .showing { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
+  .device { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
 
   .msg { margin-top: 16px; font-size: 15px; min-height: 1.4em; color: var(--muted); }
   .msg.err { color: #c0392b; }
@@ -150,7 +157,10 @@ export function controlPage({ personName }) {
 
         <div class="custom" id="textrow" data-active="false">
           <span class="statusdot" id="textdot" role="img" aria-label="Custom message is not showing"></span>
-          <input id="text" type="text" maxlength="120" placeholder="Custom message…">
+          <div class="fields">
+            <input id="text" type="text" maxlength="120" placeholder="Custom message…" aria-label="Custom message title">
+            <input id="subtitle" type="text" maxlength="80" placeholder="Subtitle (optional)" aria-label="Custom message subtitle">
+          </div>
           <button id="send" disabled>Show custom</button>
         </div>
       </div>
@@ -169,6 +179,7 @@ export function controlPage({ personName }) {
     <section>
       <h2>On the panel</h2>
       <div class="showing" id="cap">…</div>
+      <div class="device" id="device" aria-live="polite"></div>
       <div class="previews">
         <div class="preview">
           <img id="shot-p" alt="Portrait frame">
@@ -190,7 +201,7 @@ const $ = (id) => document.getElementById(id);
 const buttons = [...document.querySelectorAll('button[data-display]')];
 // Last known server state, so the action can tell 'already showing this'
 // from "there is a change to send".
-let shown = { display: null, customText: '' };
+let shown = { display: null, customText: '', customSubtitle: '' };
 const LABELS = { in: 'In office', out: 'Out of office', text: 'Custom message', weekend: 'Weekend' };
 
 function say(text, isError) {
@@ -211,10 +222,17 @@ function paint(s) {
   $('textdot').setAttribute('aria-label',
     textOn ? 'Custom message is showing' : 'Custom message is not showing');
 
-  shown = { display: s.display, customText: s.customText || '' };
-  syncSend();
+  shown = { display: s.display, customText: s.customText || '', customSubtitle: s.customSubtitle || '' };
 
-  if (document.activeElement !== $('text')) $('text').value = s.customText || '';
+  // Not while typing: a minute's refresh would otherwise overwrite a half-
+  // written message.
+  const editing = [$('text'), $('subtitle')].includes(document.activeElement);
+  if (!editing) {
+    $('text').value = s.customText || '';
+    $('subtitle').value = s.customSubtitle || '';
+  }
+  syncSend();
+  paintDevice(s.device);
 
   $('cap').textContent = s.autoWeekend
     ? 'Showing ' + LABELS.weekend.toLowerCase() + ' — automatic today'
@@ -228,6 +246,44 @@ function paint(s) {
   $('shot-l').src = '/preview?mode=server&orient=landscape' + bust;
 }
 
+/** "10:12", or "Mon 23 Nov, 10:12" when it was not today. Browser-local time. */
+function when(iso) {
+  const d = new Date(iso);
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  if (d.toDateString() === new Date().toDateString()) return time;
+  return d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' }) + ', ' + time;
+}
+
+function ago(iso) {
+  const mins = Math.round((Date.now() - new Date(iso)) / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return mins + ' min ago';
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return hours + ' h ago';
+  return Math.round(hours / 24) + ' days ago';
+}
+
+/**
+ * When the Kindle last called in. The "updated" stamp on the panel says when
+ * the frame last changed, which on a quiet day can be hours old while the
+ * device is checking in fine - so say both what it last downloaded and when it
+ * last asked.
+ */
+function paintDevice(d) {
+  const el = $('device');
+  if (!d || (!d.fetchedAt && !d.checkedAt)) {
+    el.textContent = 'The Kindle has not called in yet.';
+    return;
+  }
+  const parts = [];
+  if (d.fetchedAt) parts.push('Kindle last fetched an image at ' + when(d.fetchedAt) + ' (' + ago(d.fetchedAt) + ')');
+  if (d.checkedAt) {
+    const result = d.checkResult === 'unchanged' ? ', no change' : '';
+    parts.push('last checked ' + when(d.checkedAt) + ' (' + ago(d.checkedAt) + result + ')');
+  }
+  el.textContent = parts.join(' · ');
+}
+
 /**
  * 'Show custom' is live only when pressing it would change the panel: there is
  * a message, and it is not already the one showing. Otherwise it is the third
@@ -235,15 +291,19 @@ function paint(s) {
  */
 function syncSend() {
   const text = $('text').value.trim();
-  const already = shown.display === 'text' && text === shown.customText.trim();
+  const subtitle = $('subtitle').value.trim();
+  const already = shown.display === 'text'
+    && text === shown.customText.trim()
+    && subtitle === shown.customSubtitle.trim();
   $('send').disabled = !text || already;
 }
 $('text').addEventListener('input', syncSend);
+$('subtitle').addEventListener('input', syncSend);
 
 // The card reads as a field, so clicking anywhere in it should land in the
 // input - except on the action itself.
 $('textrow').addEventListener('click', (e) => {
-  if (!e.target.closest('button')) $('text').focus();
+  if (!e.target.closest('button') && !e.target.closest('input')) $('text').focus();
 });
 
 async function api(path, options) {
@@ -283,10 +343,13 @@ buttons.forEach((b) =>
 const sendText = () => {
   const text = $('text').value.trim();
   if (!text) { $('text').focus(); return; }
-  send({ display: 'text', text }, 'Message set.');
+  // Always sent, so clearing the subtitle field clears it on the panel.
+  send({ display: 'text', text, subtitle: $('subtitle').value.trim() }, 'Message set.');
 };
 $('send').addEventListener('click', sendText);
-$('text').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
+for (const id of ['text', 'subtitle']) {
+  $(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') sendText(); });
+}
 
 const toggle = () => {
   const on = $('weekend').getAttribute('aria-checked') !== 'true';

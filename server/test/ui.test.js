@@ -78,3 +78,26 @@ test('the input is bare so the card is the field', () => {
   assert.ok(rule.includes('background: transparent'), 'no background of its own');
   assert.doesNotMatch(rule, /border-radius/, 'a box inside a box');
 });
+
+test('the custom card has a subtitle field under the title', () => {
+  const title = html.indexOf('<input id="text"');
+  const sub = html.indexOf('<input id="subtitle"');
+  assert.ok(title > -1 && sub > title, 'subtitle should follow the title');
+  assert.match(html, /id="subtitle"[^>]*maxlength="80"/);
+});
+
+test('the subtitle is always sent, so clearing it clears the panel', () => {
+  assert.match(html, /send\(\{ display: 'text', text, subtitle: \$\('subtitle'\)\.value\.trim\(\) \}/);
+});
+
+test('a subtitle-only edit re-enables the action', () => {
+  assert.match(html, /subtitle === shown\.customSubtitle\.trim\(\)/);
+  assert.match(html, /\$\('subtitle'\)\.addEventListener\('input', syncSend\)/);
+});
+
+test('the panel section says when the Kindle last fetched and checked', () => {
+  assert.match(html, /<div class="device" id="device"/);
+  assert.match(html, /Kindle last fetched an image at /);
+  assert.match(html, /last checked /);
+  assert.match(html, /The Kindle has not called in yet\./);
+});

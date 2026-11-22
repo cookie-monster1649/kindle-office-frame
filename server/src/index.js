@@ -90,6 +90,15 @@ function canWrite(req) {
  * token: the previews exist for the browser, and keeping the read token out
  * means this path cannot be used to sidestep the Access scoping on /frame.png.
  */
+/**
+ * Whether this request is the Kindle. Only the read token counts: the write
+ * token can fetch frames too, for debugging, and the control page's previews
+ * use the session - neither should show up as the device calling in.
+ */
+function isDevice(req) {
+  return bearer(req) === config.readToken && config.readToken !== config.writeToken;
+}
+
 function canPreview(req) {
   return hasUiSession(req) || bearer(req) === config.writeToken;
 }
@@ -109,7 +118,7 @@ app.get('/', (_req, res) => {
   res.type('html').send(controlPage({ personName: config.personName }));
 });
 
-async function serveFrame(req, res) {
+async function serveFrame(req, res, { fromDevice = false } = {}) {
   const mode = pick(req.query.mode, MODES, 'in');
   const orientation = pick(req.query.orient, ORIENTATIONS, 'portrait');
 
@@ -132,9 +141,11 @@ async function serveFrame(req, res) {
       weather,
       markdown: store.get().markdown,
       customText: store.get().customText,
+      customSubtitle: store.get().customSubtitle,
     });
 
     const png = await renderFrame({ tree, orientation });
+    if (fromDevice) await store.recordDevice('fetch', { orientation });
 
     res.set('Content-Type', 'image/png');
     res.set('Content-Length', String(png.length));
@@ -145,6 +156,34 @@ async function serveFrame(req, res) {
   }
 }
 
+// HEAD is what the device actually polls with: it carries the ETag and costs
+// a few hundred bytes. It must be registered *before* app.get('/frame.png'):
+// Express routes HEAD to the first matching GET route, so with this below it,
+// it never ran - every changed poll rendered a full PNG only to discard the
+// body.
+app.head('/frame.png', async (req, res) => {
+  if (!canRead(req)) return res.status(401).end();
+
+  const mode = pick(req.query.mode, MODES, 'in');
+  const orientation = pick(req.query.orient, ORIENTATIONS, 'portrait');
+
+  try {
+    const weather = await getWeather();
+    const etag = store.etagFor({ mode, orientation, weather });
+    res.set('Cache-Control', 'no-cache');
+    res.set('ETag', etag);
+    res.set('Content-Type', 'image/png');
+    const unchanged = req.get('if-none-match') === etag;
+    if (isDevice(req)) {
+      await store.recordDevice('check', { result: unchanged ? 'unchanged' : 'changed' });
+    }
+    return res.status(unchanged ? 304 : 200).end();
+  } catch (err) {
+    console.error('[frame] head failed:', err);
+    return res.status(500).end();
+  }
+});
+
 /**
  * The read endpoint is authenticated too. It is reachable from the public
  * internet through the tunnel, and the frame carries someone's location and
@@ -152,7 +191,7 @@ async function serveFrame(req, res) {
  */
 app.get('/frame.png', async (req, res) => {
   if (!canRead(req)) return res.status(401).json({ error: 'unauthorized' });
-  return serveFrame(req, res);
+  return serveFrame(req, res, { fromDevice: isDevice(req) });
 });
 
 /**
@@ -179,28 +218,6 @@ app.get('/preview', async (req, res) => {
   return serveFrame(req, res);
 });
 
-// HEAD is what the device actually polls with: it carries the ETag and costs
-// a few hundred bytes. Express routes HEAD to the GET handler by default, but
-// only after running it, so answer it explicitly and skip the render.
-app.head('/frame.png', async (req, res) => {
-  if (!canRead(req)) return res.status(401).end();
-
-  const mode = pick(req.query.mode, MODES, 'in');
-  const orientation = pick(req.query.orient, ORIENTATIONS, 'portrait');
-
-  try {
-    const weather = await getWeather();
-    const etag = store.etagFor({ mode, orientation, weather });
-    res.set('Cache-Control', 'no-cache');
-    res.set('ETag', etag);
-    res.set('Content-Type', 'image/png');
-    return res.status(req.get('if-none-match') === etag ? 304 : 200).end();
-  } catch (err) {
-    console.error('[frame] head failed:', err);
-    return res.status(500).end();
-  }
-});
-
 /**
  * Set what the panel shows when the device is in `Show server` mode. This is
  * the endpoint to hit from a phone: the point of an in/out board is being
@@ -221,11 +238,12 @@ function readDisplay(req) {
 }
 
 function statusBody() {
-  const { display, customText, weekendMode, version, updatedAt } = store.get();
+  const { display, customText, customSubtitle, weekendMode, version, updatedAt, device } = store.get();
   return {
     // What was selected.
     display,
     customText,
+    customSubtitle,
     weekendMode,
     // What the panel will actually show, once the weekend rule is applied.
     effective: store.resolveMode('server'),
@@ -234,6 +252,9 @@ function statusBody() {
     autoWeekend: store.isAutoWeekend(),
     version,
     updatedAt,
+    // When the Kindle last checked in, and last downloaded an image. Null
+    // until it has.
+    device,
   };
 }
 
@@ -267,6 +288,7 @@ app.post('/status', statusBody_, async (req, res) => {
     if (looksLikeDisplay) patch.display = raw.trim().toLowerCase();
     else patch.text = raw;
   }
+  if (body.subtitle !== undefined) patch.subtitle = String(body.subtitle);
   if (body.weekendMode !== undefined) {
     patch.weekendMode = body.weekendMode === true || body.weekendMode === 'true';
   }
@@ -274,7 +296,7 @@ app.post('/status', statusBody_, async (req, res) => {
   if (Object.keys(patch).length === 0) {
     return res.status(400).json({
       error: 'nothing to change',
-      accepts: ['display', 'text', 'weekendMode'],
+      accepts: ['display', 'text', 'subtitle', 'weekendMode'],
       allowed: DISPLAYS,
     });
   }

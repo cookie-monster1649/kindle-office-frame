@@ -16,7 +16,7 @@ server-side; the device does an HTTP request and a framebuffer write.
 │  → paint → sleep │                        │  → 16-level dither         │
 └──────────────────┘                        └────────────────────────────┘
         ▲                                          ▲          │
-        │ power button → menu                      │          └─ Open-Meteo
+        │ hold power → menu                      │          └─ Open-Meteo
         │                                   POST /status
                                        (phone, script, HA)
 ```
@@ -109,6 +109,10 @@ Setting `text` shows the custom message — capped at 120 characters, sized to
 its length, wrapping rather than truncating. Sending `text` without a `display`
 switches to it, since that is almost always what was meant.
 
+An optional `subtitle` (80 characters) sits under it the way "Please use this
+desk" sits under the out card: 68% of the title's size, same gap. With a
+subtitle the pair is sized to fit together; without one, sizing is unchanged.
+
 `GET /status` reports the selection and the outcome, so a caller can always
 explain what is on the wall:
 
@@ -116,12 +120,25 @@ explain what is on the wall:
 {
   "display": "in",        // what was selected
   "customText": "",
+  "customSubtitle": "",
   "weekendMode": true,    // the toggle
   "effective": "weekend", // what the panel actually shows
   "autoWeekend": true,    // the rule is overriding the selection
-  "version": 12
+  "version": 12,
+  "device": {             // the Kindle's last contact, null until it calls in
+    "checkedAt": "2026-11-23T00:00:04.112Z",
+    "checkResult": "unchanged",   // the HEAD got a 304
+    "fetchedAt": "2026-11-22T23:12:41.950Z",
+    "orientation": "landscape"
+  }
 }
 ```
+
+The control page shows `device` under its previews — when the Kindle last
+downloaded an image and when it last checked. The panel's own "updated" stamp
+only says when the frame last *changed*, which on a quiet day can be hours old
+while the device is checking in fine. Only requests carrying the read token
+count, so the previews and write-token debugging do not show up as the device.
 
 The day is decided in the display timezone, always server-side: the Kindle's
 clock is UTC and it ships no tzdata, so `TZ=… date` is silently ignored there.
@@ -191,11 +208,11 @@ undebuggable from the sending end.
 | Form-encoded | `display=out`, or Slack's `text=out` | Slack slash commands |
 | Bare string | `out` | Minimal webhook senders |
 
-`POST /status` takes any subset of `display`, `text` and `weekendMode`:
+`POST /status` takes any subset of `display`, `text`, `subtitle` and `weekendMode`:
 
 ```sh
-# custom message
--d '{"text":"Back at 3pm"}'
+# custom message, with an optional subtitle
+-d '{"text":"JJ is at lunch","subtitle":"Back at 2pm"}'
 # stop overriding weekends
 -d '{"weekendMode":false}'
 ```
@@ -294,8 +311,8 @@ never appears.
 
 ### Using it
 
-`Frame` appears in the Kindle library. Tap it to start; press the power button
-for the menu; `Exit` hands the screen back.
+`Frame` appears in the Kindle library. Tap it to start; hold the power button
+for two seconds for the menu (a short press, or a spurious onkey event, is ignored and the device goes back to sleep); `Exit` hands the screen back.
 
 ```
 Library → Frame ──▶ menu ──▶ Show server / In office / Out of office
@@ -367,8 +384,8 @@ loads `menu-landscape.png` alongside `menu-landscape.regions`.
 | `GET` | `/` | none | Control page; reveals nothing without a token |
 | `GET` | `/frame.png?mode=&orient=` | read | The rendered frame, ETag, 304 |
 | `HEAD` | `/frame.png?mode=&orient=` | read | What the device actually polls with |
-| `GET` | `/status` | read | `display`, `effective`, `autoWeekend`, `version` |
-| `POST` | `/status` | **write** | `display`, `text`, `weekendMode` — any subset |
+| `GET` | `/status` | read | `display`, `effective`, `autoWeekend`, `version`, `device` |
+| `POST` | `/status` | **write** | `display`, `text`, `subtitle`, `weekendMode` — any subset |
 | `POST` | `/status/:display` | **write** | Path form, no body |
 | `POST` | `/content` | **write** | Markdown, stored but not yet displayed |
 | `GET` | `/content` | read | Current markdown and version |

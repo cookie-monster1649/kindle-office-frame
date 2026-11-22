@@ -242,7 +242,51 @@ function hyphenateLongWords(text, fontSize, width) {
   }).join('');
 }
 
-function statusPane({ mode, markdown, customText }, landscape) {
+// The out card's subtitle proportions, shared with the custom message so a
+// custom title and subtitle sit exactly as "is out today / Please use this
+// desk" does.
+const SUBTITLE_RATIO = 0.68;
+const subtitleGap = (landscape) => (landscape ? 18 : 14);
+const TITLE_LH = 1.14;
+const SUBTITLE_LH = 1.12;
+
+/**
+ * Pick the custom message's title size from the ladder.
+ *
+ * Title alone: the first size at which it wraps to MAX_LINES or fewer, which
+ * is the rule this had before subtitles existed, so existing messages render
+ * exactly as they did.
+ *
+ * With a subtitle: the first size at which title, gap and subtitle together
+ * fit the height MAX_LINES headline lines would take. That is the same budget
+ * expressed as height, since the two lines are now different sizes and a line
+ * count no longer measures anything.
+ */
+function customSizes(title, subtitle, landscape, width) {
+  const ladder = landscape
+    ? [STATUS_SIZE.landscape, 96, 82, 70, 60, 52]
+    : [STATUS_SIZE.portrait, 84, 72, 62, 54, 46];
+  const subOf = (s) => Math.round(s * SUBTITLE_RATIO);
+
+  let size;
+  if (!subtitle) {
+    size = ladder.find((s) => wrappedLines(title, s, width) <= MAX_LINES);
+  } else {
+    const headline = landscape ? STATUS_SIZE.landscape : STATUS_SIZE.portrait;
+    const budget = MAX_LINES * headline * TITLE_LH;
+    size = ladder.find((s) => {
+      const sub = subOf(s);
+      const h = wrappedLines(title, s, width) * s * TITLE_LH
+        + subtitleGap(landscape)
+        + wrappedLines(subtitle, sub, width) * sub * SUBTITLE_LH;
+      return h <= budget;
+    });
+  }
+  size ??= ladder[ladder.length - 1];
+  return { size, sub: subOf(size) };
+}
+
+function statusPane({ mode, markdown, customText, customSubtitle }, landscape) {
   // `weekend` is never selected directly - it arrives resolved, because the
   // device's clock is UTC with no tzdata and could not apply the rule itself.
   if (mode === 'weekend') {
@@ -265,13 +309,14 @@ function statusPane({ mode, markdown, customText }, landscape) {
     // line and so needs fewer lines, which is what the ladder is walking
     // towards. The 120-character cap means the bottom is reachable, so it has
     // to be a usable size rather than a token fallback.
+    //
+    // An optional subtitle sits under it the way "Please use this desk" sits
+    // under the out card: a step down in size, so it reads as an addition
+    // rather than a second statement.
     const raw = customText || '—';
-    const ladder = landscape
-      ? [STATUS_SIZE.landscape, 96, 82, 70, 60, 52]
-      : [STATUS_SIZE.portrait, 84, 72, 62, 54, 46];
+    const subtitle = String(customSubtitle || '').trim();
     const width = statusWidth(landscape);
-    const size = ladder.find((s) => wrappedLines(raw, s, width) <= MAX_LINES)
-      ?? ladder[ladder.length - 1];
+    const { size, sub } = customSizes(raw, subtitle, landscape, width);
     const body = hyphenateLongWords(raw, size, width);
     return col({ justifyContent: 'center' }, [
       el('div', {
@@ -280,9 +325,13 @@ function statusPane({ mode, markdown, customText }, landscape) {
         // column and colliding with the weather pane. Hyphenation above should
         // mean this never has to fire.
         wordBreak: 'break-word',
-        fontSize: size, lineHeight: 1.14,
+        fontSize: size, lineHeight: TITLE_LH,
       }, body),
-    ]);
+      subtitle && el('div', {
+        display: 'flex', flexWrap: 'wrap', wordBreak: 'break-word',
+        fontSize: sub, lineHeight: SUBTITLE_LH, marginTop: subtitleGap(landscape),
+      }, hyphenateLongWords(subtitle, sub, width)),
+    ].filter(Boolean));
   }
 
   if (mode === 'in') {
@@ -299,11 +348,11 @@ function statusPane({ mode, markdown, customText }, landscape) {
     // subtitle, a step down, so it reads as an addition rather than a third
     // equal statement.
     const size = landscape ? STATUS_SIZE.landscape : STATUS_SIZE.portrait;
-    const sub = Math.round(size * 0.68);
+    const sub = Math.round(size * SUBTITLE_RATIO);
     return col({ justifyContent: 'center' }, [
       txt({ fontSize: size, lineHeight: 1.08 }, `${config.personName} is out`),
       txt({ fontSize: size, lineHeight: 1.08 }, 'today'),
-      txt({ fontSize: sub, lineHeight: 1.12, marginTop: landscape ? 18 : 14 },
+      txt({ fontSize: sub, lineHeight: SUBTITLE_LH, marginTop: subtitleGap(landscape) },
         'Please use this desk'),
     ]);
   }
@@ -316,6 +365,7 @@ export function buildTree({
   weather = null,
   markdown = '',
   customText = '',
+  customSubtitle = '',
   now = new Date(),
 }) {
   const { width, height } = logicalSize(orientation);
@@ -348,7 +398,7 @@ export function buildTree({
     el('div', {
       display: 'flex', flexDirection: 'column', justifyContent: 'center',
       flexBasis: landscape ? '55%' : '46%', flexGrow: 0, flexShrink: 0,
-    }, [statusPane({ mode, markdown, customText }, landscape)]),
+    }, [statusPane({ mode, markdown, customText, customSubtitle }, landscape)]),
 
     el('div', {
       display: 'flex', flexDirection: 'column', justifyContent: 'center',

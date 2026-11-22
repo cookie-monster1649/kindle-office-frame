@@ -39,18 +39,36 @@ const STORE = process.env.STATE_PATH || process.env.CONTENT_PATH ||
 export const DISPLAYS = ['in', 'out', 'text'];
 
 const MAX_TEXT = 120;
+// The line under the custom message, like "Please use this desk" under the
+// out card. A step down in size, so shorter.
+const MAX_SUBTITLE = 80;
+
+/**
+ * The Kindle's last contact, for the control page. Not part of the ETag and
+ * never bumps the version: it records what the device did, it does not change
+ * what the frame says.
+ *
+ *   checkedAt / checkResult   the last conditional HEAD - 'unchanged' (304)
+ *                             or 'changed' (200, a download follows)
+ *   fetchedAt / orientation   the last image actually downloaded
+ */
+const NO_DEVICE = { checkedAt: null, checkResult: null, fetchedAt: null, orientation: null };
 
 let state = {
   display: 'in',
   // Shown when display is 'text'. Short by design: this is a headline on a
   // panel read from across a room, not a document.
   customText: '',
+  // Optional second line under the custom message, at the out card's subtitle
+  // size.
+  customSubtitle: '',
   // "Show away on weekends". When on, Saturday and Sunday override whatever
   // is selected.
   weekendMode: true,
   markdown: '',
   version: 0,
   updatedAt: null,
+  device: { ...NO_DEVICE },
 };
 
 export async function load() {
@@ -59,10 +77,12 @@ export async function load() {
     state = {
       display: DISPLAYS.includes(parsed.display) ? parsed.display : 'in',
       customText: String(parsed.customText ?? '').slice(0, MAX_TEXT),
+      customSubtitle: String(parsed.customSubtitle ?? '').slice(0, MAX_SUBTITLE),
       weekendMode: parsed.weekendMode !== false,
       markdown: parsed.markdown ?? '',
       version: parsed.version ?? 0,
       updatedAt: parsed.updatedAt ?? null,
+      device: { ...NO_DEVICE, ...(parsed.device ?? {}) },
     };
   } catch {
     // No stored state yet is the normal first run, not an error.
@@ -76,7 +96,31 @@ async function persist() {
 }
 
 export function get() {
-  return { ...state };
+  return { ...state, device: { ...state.device } };
+}
+
+/**
+ * Record a request from the Kindle. `kind` is 'check' for the conditional
+ * HEAD, 'fetch' for a downloaded image.
+ *
+ * Persisted so the control page can still say when the device last called in
+ * after a server restart - a restart is exactly when you would want to know.
+ * At most a write per poll, which is hourly.
+ */
+export async function recordDevice(kind, { result, orientation, now = new Date() } = {}) {
+  const at = now.toISOString();
+  const device = { ...state.device };
+  if (kind === 'check') {
+    device.checkedAt = at;
+    device.checkResult = result;
+  } else if (kind === 'fetch') {
+    device.fetchedAt = at;
+    device.orientation = orientation;
+  } else {
+    return;
+  }
+  state = { ...state, device };
+  try { await persist(); } catch (err) { console.error('[store] device record not saved:', err); }
 }
 
 /**
@@ -88,7 +132,7 @@ export function get() {
  * frame, and a change that forgot to bump it would simply never reach the
  * panel.
  */
-export async function update({ display, text, weekendMode }) {
+export async function update({ display, text, subtitle, weekendMode }) {
   const next = { ...state };
 
   if (display !== undefined) {
@@ -103,6 +147,11 @@ export async function update({ display, text, weekendMode }) {
     // Setting text is almost always meant as "show this now", so save the
     // extra call rather than leaving the panel unchanged and puzzling.
     if (display === undefined && next.customText) next.display = 'text';
+  }
+
+  if (subtitle !== undefined) {
+    next.customSubtitle = String(subtitle).slice(0, MAX_SUBTITLE);
+    if (display === undefined && next.customSubtitle && next.customText) next.display = 'text';
   }
 
   if (weekendMode !== undefined) {
