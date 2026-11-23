@@ -113,6 +113,9 @@ rtc_sleep() {
     echo "$WAKE_TARGET" >"$RTC"
   fi
 
+  # Only button presses logged after this point belong to this sleep.
+  SUSPEND_KTS=$(klog_last_ts)
+
   echo "mem" >/sys/power/state
 
   # Resumes here. Disarm anything that did not fire so it cannot block the
@@ -131,20 +134,115 @@ woke_early() {
 
 # An early wake is not proof of a press. dmesg has caught the PMIC onkey
 # logging a "button online event" with nobody at the desk, 531s before the
-# alarm, and every one of those used to throw the menu up over the frame.
+# alarm, and every one of those used to throw the menu up over the frame. So
+# the menu needs the power button *held*.
 #
-# So the menu needs the power button *held*. A spurious onkey event is a blip,
-# and a quick press is over before resume finishes, so by the time this runs
-# the key reads as released. A deliberate hold is still down. This asks the
-# kernel for the key's current state (EVIOCGKEY, via `evtest --query`) rather
-# than watching for events, because the press itself happened during resume,
-# before anything here could be listening.
+# How long it was held cannot be read from the key's live state. The first
+# version asked the kernel whether KEY_POWER was down (EVIOCGKEY, via `evtest
+# --query`), and it never was, however long the button was held: the press
+# that wakes the device is registered during resume, and on this 3.0 kernel
+# the input core then resets the device and marks every key released. The
+# eventual release changes nothing, so the key reads "up" throughout.
 #
-# Keep LONG_PRESS_SECS well under the Kindle's own hold thresholds (the
-# power-off dialog at ~7s, a hard reset at ~20s).
+# The onkey driver's own log lines are what is left: "button online event"
+# on press and "button offline event" on release, straight from its
+# interrupt. Not both, though. The press that wakes the device is spent as the
+# wake source and never logged; only its release is. A press made while
+# already awake logs both.
+#
+# So the hold runs from whichever comes first after this sleep began - a
+# logged press, or the kernel finishing the wakeup the press caused - to the
+# first release.
+#
+#   short press     released during resume or just after; a second press
+#                   within SECOND_PRESS_WAIT opens the menu, else ignored
+#   long hold       measured on release, so the menu appears as you let go
+#   phantom         a wake with no release logged; times out, ignored
+#
+# Timed from the wakeup, the measurement misses the second or so the kernel
+# spent resuming while the button was already down. RESUME_SLACK is that
+# allowance: LONG_PRESS_MIN = LONG_PRESS_SECS - RESUME_SLACK is the measured
+# threshold.
 EVTEST="${EVTEST:-/mnt/us/usbnet/bin/evtest}"
 LONG_PRESS_SECS=${LONG_PRESS_SECS:-2}
+RESUME_SLACK=${RESUME_SLACK:-1}
+LONG_PRESS_MIN=$(awk -v a="$LONG_PRESS_SECS" -v b="$RESUME_SLACK" 'BEGIN { print a - b }')
+# A hold longer than this with no release logged is not a hold.
+RELEASE_WAIT=${RELEASE_WAIT:-5}
+# After a short press, how long to stay awake for a second one.
+SECOND_PRESS_WAIT=${SECOND_PRESS_WAIT:-4}
 POWER_DEV="${POWER_DEV:-}"
+SUSPEND_KTS=""
+
+# Timestamp of the newest kernel log line, on dmesg's own clock.
+klog_last_ts() {
+  dmesg 2>/dev/null | tail -n 1 | sed -n 's/^\[ *\([0-9][0-9.]*\)\].*/\1/p'
+}
+
+# Power button activity after kernel time $1, as "<wake> <press> <release>":
+# when the kernel finished waking, the first logged press, the first logged
+# release. "-" for each not yet seen; nothing if none of them has happened.
+press_since() {
+  dmesg 2>/dev/null | awk -v since="${1:-0}" '
+    {
+      s = $0
+      if (s !~ /^\[ *[0-9]/) next
+      sub(/^\[ */, "", s)
+      ts = substr(s, 1, index(s, "]") - 1) + 0
+      if (ts <= since + 0) next
+    }
+    /pmic:onkey::.*button online event/  { if (on == "") on = ts; next }
+    /pmic:onkey::.*button offline event/ { if (off == "") off = ts; next }
+    /PM: Finishing wakeup/               { if (wake == "") wake = ts }
+    END {
+      if (wake != "" || on != "" || off != "")
+        print (wake == "" ? "-" : wake), (on == "" ? "-" : on), (off == "" ? "-" : off)
+    }'
+}
+
+# 0 if the wake was someone asking for the menu: the waking press held for
+# LONG_PRESS_MIN before release, or a second press within SECOND_PRESS_WAIT.
+long_press_from_log() {
+  ticks=0
+  short=""
+  while :; do
+    set -- $(press_since "$SUSPEND_KTS")
+    wake=${1:--} on=${2:--} off=${3:--}
+    if [ "$on" != "-" ]; then
+      # A press that wakes the device is logged late, ~1.8s after the wakeup
+      # (seen: wake 9055.59, online 9057.43, no release logged), and only when
+      # it is still held. A press made while awake is logged at once. Either
+      # way, a logged press after waking is someone at the button.
+      echo "Power press logged after waking: menu"
+      return 0
+    fi
+    if [ "$off" != "-" ] && [ -z "$short" ]; then
+      from=$wake
+      [ "$from" = "-" ] && from=$SUSPEND_KTS
+      held=$(awk -v a="$from" -v b="$off" 'BEGIN { printf "%.2f", b - a }')
+      if awk -v h="$held" -v m="$LONG_PRESS_MIN" 'BEGIN { exit !(h >= m) }'; then
+        echo "Power released ${held}s after waking (needs ${LONG_PRESS_MIN}s): long press"
+        return 0
+      fi
+      echo "Power released ${held}s after waking: short; waiting ${SECOND_PRESS_WAIT}s for a second press"
+      short=$ticks
+    fi
+    if [ -n "$short" ] && [ $((ticks - short)) -ge $((SECOND_PRESS_WAIT * 4)) ]; then
+      echo "No second press"
+      return 1
+    fi
+    if [ "$wake" = "-" ] && [ "$off" = "-" ] && [ "$ticks" -ge 4 ]; then
+      echo "Nothing logged since suspending"
+      return 1
+    fi
+    if [ "$ticks" -ge $((RELEASE_WAIT * 4)) ]; then
+      echo "No power button release within ${RELEASE_WAIT}s; not a press"
+      return 1
+    fi
+    usleep 250000 2>/dev/null || sleep 1
+    ticks=$((ticks + 1))
+  done
+}
 
 # The input device that reports KEY_POWER, from /proc/bus/input/devices. A
 # block whose key bitmap includes code 116 (KEY_POWER) - bit 20 of the fourth
@@ -179,8 +277,10 @@ power_key_down() {
   esac
 }
 
-# 0 when the power button is held for LONG_PRESS_SECS from now.
-long_press() {
+# Fallback for a kernel that does not log onkey events: the live key state,
+# held for LONG_PRESS_SECS from now. See above for why this misses a press
+# that woke the device on this firmware.
+long_press_from_state() {
   dev=$(find_power_dev)
   if [ ! -x "$EVTEST" ] || [ -z "$dev" ] || [ ! -r "$dev" ]; then
     echo "Cannot read the power button (dev=${dev:-none}); treating the wake as a press"
@@ -200,6 +300,18 @@ long_press() {
     i=$((i + 1))
   done
   return 0
+}
+
+# Whether earlier onkey lines are still in the log says nothing: the ring
+# buffer is small and a run of suspend/resume cycles flushes them. All the log
+# method needs is a timestamp to measure from.
+long_press() {
+  if [ -n "$SUSPEND_KTS" ]; then
+    long_press_from_log
+  else
+    echo "No kernel log timestamps; reading the key state instead"
+    long_press_from_state
+  fi
 }
 
 # ------------------------------------------------------------------- ui ----
@@ -440,7 +552,7 @@ refresh_from_server() {
       [ "$announce" = yes ] && notify "Could not fetch the frame." \
         "$(echo "$err" | grep -v '^[[:space:]]*$' | tail -n 1)" \
         "" \
-        "Hold power for the menu."
+        "Hold power 2s for the menu."
       # Nobody is watching a timed-out menu, so an error message would sit
       # there unread. The last good frame is a better thing to leave up; the
       # retry path will replace it once the fetch works.
@@ -619,7 +731,7 @@ main_loop() {
     while woke_early; do
       margin=$((WAKE_TARGET - $(date +%s)))
       if long_press; then
-        echo "$(date) Power held ${LONG_PRESS_SECS}s, ${margin}s before the alarm: menu"
+        echo "$(date) Long press ${margin}s before the alarm: menu"
         show_menu
         break
       fi

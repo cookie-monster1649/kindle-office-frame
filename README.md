@@ -312,7 +312,7 @@ never appears.
 ### Using it
 
 `Frame` appears in the Kindle library. Tap it to start; hold the power button
-for two seconds for the menu (a short press, or a spurious onkey event, is ignored and the device goes back to sleep); `Exit` hands the screen back.
+for two seconds for the menu, or press it twice (a single short press, or a spurious onkey event, is ignored and the device goes back to sleep); `Exit` hands the screen back.
 
 ```
 Library → Frame ──▶ menu ──▶ Show server / In office / Out of office
